@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo:*)",
+      "Read(//d//**)",
+      "Bash(./target/release/trader_rank.exe)",
+      "Bash(./target/release/trader_rank.exe --reprocess)",
+      "Read(//d/GitHub/**)",
+      "Bash(rm:*)",
+      "WebSearch",
+      "Bash(./target/debug/trader_rank.exe:*)",
+      "Bash(cat:*)",
+      "Bash(git commit:*)",
+      "Bash(git add:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
