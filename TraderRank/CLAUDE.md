@@ -22,22 +22,24 @@ TraderRank/
 │   ├── main.rs           // Application orchestrator
 │   ├── models/           // Domain models & data structures
 │   │   ├── mod.rs
-│   │   ├── trade.rs      // Trade entity with full lifecycle
-│   │   └── summary.rs    // Daily/aggregate summaries
+│   │   ├── trade.rs      // Trade entity with buy/sell sides
+│   │   └── summary.rs    // Daily/weekly/overall summaries
 │   ├── parser/           // Data ingestion layer
 │   │   ├── mod.rs
-│   │   └── csv_parser.rs // CSV/Excel parsing with validation
+│   │   └── csv_parser.rs // CSV parsing with validation
 │   ├── analytics/        // Quantitative engine
 │   │   ├── mod.rs
-│   │   ├── metrics.rs    // Core trading metrics
-│   │   └── patterns.rs   // Pattern recognition & time analysis
+│   │   ├── metrics.rs    // Core metrics & position management
+│   │   └── patterns.rs   // Time-based pattern analysis
 │   ├── persistence/      // Data persistence layer
 │   │   ├── mod.rs
-│   │   └── json_store.rs // JSON storage with compression
+│   │   └── json_store.rs // JSON storage with file tracking
 │   └── visualization/    // Presentation layer
 │       ├── mod.rs
-│       ├── tables.rs     // Beautiful ASCII tables
-│       └── charts.rs     // Terminal-based charts
+│       ├── tables.rs     // Summary tables (detailed/brief)
+│       ├── charts.rs     // P&L, win rate, commission charts
+│       ├── calendar.rs   // Monthly calendar views
+│       └── weekly.rs     // Weekly performance analysis
 ```
 
 ### Data Flow
@@ -54,20 +56,22 @@ graph LR
 ## Key Features
 
 ### Trading Metrics
-- **P&L Analysis**: Real-time profit/loss tracking with commission accounting
-- **Win Rate**: Statistical edge calculation with confidence intervals
-- **Trade Distribution**: Volume analysis by time, symbol, and strategy
-- **Risk Metrics**: Maximum drawdown, Sharpe ratio, risk-adjusted returns
+- **P&L Analysis**: Real-time profit/loss tracking with comprehensive commission accounting
+- **Win Rate**: Detailed win/loss tracking across all timeframes (hourly, daily, weekly)
+- **Trade Distribution**: Volume analysis by time periods and market sessions
+- **Position Management**: Sophisticated long/short position tracking with proper P&L calculation
 
 ### Time Analysis
-- **Intraday Patterns**: Identifies your golden hours
-- **Market Session Analysis**: Pre-market, regular, after-hours performance
-- **Temporal Clustering**: Discovers recurring profitable patterns
+- **Intraday Patterns**: Identifies your golden hours with session-based analysis
+- **Market Session Analysis**: Detailed breakdown by pre-market, market open, lunch, power hour
+- **Multi-timeframe Views**: Hourly, daily, weekly performance tracking
+- **Calendar Visualization**: Monthly calendar heatmaps comparing net vs gross P&L
 
 ### Data Management
-- **Incremental Processing**: Only processes new trades
-- **Smart Caching**: Lightning-fast historical queries
-- **Data Validation**: Detects and handles anomalies
+- **Incremental Processing**: Smart file tracking to only process new trades
+- **JSON Caching**: Persistent storage with automatic backup and recovery
+- **Duplicate Detection**: Automatic filtering of duplicate trades across files
+- **File Management**: Tracks processed files to avoid reprocessing
 
 ## Usage Patterns
 
@@ -88,9 +92,10 @@ cargo run -- --days 30
 **Adding New Metrics:**
 ```rust
 // In analytics/metrics.rs
-impl TradingMetrics {
-    pub fn your_custom_metric(&self) -> f64 {
-        // Your quantitative magic here
+impl TradingAnalytics {
+    // Add new analysis methods alongside existing ones
+    pub fn your_custom_metric(trades: &[Trade]) -> f64 {
+        // Your quantitative analysis here
     }
 }
 ```
@@ -142,37 +147,54 @@ cargo bench
 ## Sample Output
 
 ```
-╔════════════════════════════════════════════════════════════╗
-║                   TraderRank Analytics                      ║
-║                    2024-01-15 Summary                       ║
-╠════════════════════════════════════════════════════════════╣
-║ Realized P&L:        $12,456.78  ▲                         ║
-║ Win Rate:            68.5% (41W/19L)                       ║
-║ Avg Winner:          $456.12                               ║
-║ Avg Loser:          -$123.45                               ║
-║ Best Time:           09:30-10:30 (42% of profits)          ║
-║ Risk-Adjusted:       2.34 Sharpe                           ║
-╚════════════════════════════════════════════════════════════╝
+══════ Overall Trading Summary ══════
+├─ Total Net P&L: $12,456.78 (Gross: $13,456.78, Commissions: -$1,000.00)
+├─ Win Rate: 68.5% (856/1250 trades)
+├─ Average Win: $45.67
+├─ Average Loss: -$23.45
+├─ Best Day: 2024-01-15 ($2,456.78)
+└─ Worst Day: 2024-01-13 (-$567.89)
 
-Intraday Performance:
-    $800 ┤     ╭─╮
-    $600 ┤   ╭─╯ ╰╮
-    $400 ┤  ╱     ╰─╮
-    $200 ┤╭╯        ╰╮
-      $0 ┼───────────╯────
-         └─┬──┬──┬──┬──┬─
-          9  10 11 12  1
+📊 Daily P&L Chart:
+    $3000 ┤      ╭─╮
+    $2000 ┤   ╭──╯ ╰╮
+    $1000 ┤  ╱      ╰─╮
+       $0 ┼─╯         ╰───
+   -$1000 ┤
+          └────────────────
+
+📅 January 2024 - Net P&L         📅 January 2024 - Gross P&L
+│ Mon  │ Tue  │ Wed  │ Thu  │ Fri  ││ Mon  │ Tue  │ Wed  │ Thu  │ Fri  │
+│      │   1  │   2  │   3  │   4  ││      │   1  │   2  │   3  │   4  │
+│      │ $234 │-$567 │ $890 │$1234 ││      │ $244 │-$557 │ $900 │$1244 │
+
+🎯 Best Trading Periods:
+🥇 Market Open (09:00-10:00): $5,234.56 | Win Rate: 72.3%
+🥈 Power Hour (15:00-16:00): $3,456.78 | Win Rate: 68.9%
+🥉 Lunch Hour (12:00-13:00): $2,345.67 | Win Rate: 65.4%
 ```
 
-## Performance Targets
+## Current Features
 
-- Parse 100K trades: < 100ms
-- Calculate all metrics: < 50ms
-- Render full report: < 10ms
-- Memory footprint: < 50MB for 1M trades
+### Implemented
+- ✅ Comprehensive P&L tracking (net and gross)
+- ✅ Commission impact analysis
+- ✅ Multi-timeframe analysis (hourly, daily, weekly)
+- ✅ Calendar visualizations
+- ✅ Position management with trade matching
+- ✅ Market session analysis
+- ✅ Incremental file processing
+- ✅ Duplicate trade detection
 
 ## Future Enhancements
 
+### Near-term
+- [ ] Risk metrics (Sharpe ratio, maximum drawdown)
+- [ ] Performance benchmarking
+- [ ] Unit test coverage
+- [ ] Command-line arguments for custom analysis
+
+### Long-term
 - [ ] Real-time trade streaming
 - [ ] Machine learning pattern detection
 - [ ] Multi-strategy segregation
