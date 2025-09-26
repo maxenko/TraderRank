@@ -15,8 +15,8 @@ impl FromStr for Side {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "buy" => Ok(Side::Buy),
-            "sell" => Ok(Side::Sell),
+            "buy" | "long" => Ok(Side::Buy),
+            "sell" | "short" => Ok(Side::Sell),
             _ => Err(anyhow::anyhow!("Invalid side: {}", s)),
         }
     }
