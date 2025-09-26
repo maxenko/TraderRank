@@ -6,10 +6,68 @@ use std::fs::File;
 use std::io::{BufReader, BufRead};
 use std::str::FromStr;
 
+pub enum FileFormat {
+    Trades,
+    Positions,
+    Unknown,
+}
+
 pub struct CsvParser;
 
 impl CsvParser {
+    pub fn detect_format(file_path: &Path) -> Result<FileFormat> {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+        let mut lines = reader.lines();
+
+        if let Some(header_line) = lines.next() {
+            let header = header_line?;
+            let header_lower = header.to_lowercase();
+
+            // Check for positions file indicators
+            if header_lower.contains("unrealized") ||
+               header_lower.contains("avg price") ||
+               header_lower.contains("last price") ||
+               header_lower.contains("position id") {
+                return Ok(FileFormat::Positions);
+            }
+
+            // Check for trades file indicators
+            if header_lower.contains("symbol") &&
+               header_lower.contains("side") &&
+               (header_lower.contains("qty") || header_lower.contains("quantity")) &&
+               header_lower.contains("fill price") {
+                return Ok(FileFormat::Trades);
+            }
+        }
+
+        Ok(FileFormat::Unknown)
+    }
+
     pub fn parse_file(file_path: &Path) -> Result<Vec<Trade>> {
+        // First detect the file format
+        let format = Self::detect_format(file_path)?;
+
+        match format {
+            FileFormat::Positions => {
+                let file_name = file_path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown");
+                println!("  ⚠️  Skipping positions file: {} (not a trades file)", file_name);
+                return Ok(Vec::new());
+            }
+            FileFormat::Unknown => {
+                let file_name = file_path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown");
+                println!("  ⚠️  Skipping unrecognized file format: {}", file_name);
+                return Ok(Vec::new());
+            }
+            FileFormat::Trades => {
+                // Continue with normal parsing
+            }
+        }
+
         let file = File::open(file_path)?;
         let reader = BufReader::new(file);
         let mut trades = Vec::new();
