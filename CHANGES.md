@@ -1,5 +1,63 @@
 # TraderRank - Change Log
 
+## Version 0.2.0 (2025-09-26)
+
+### New Features
+
+#### Intelligent CSV File Format Detection
+- **Smart Format Detection**: Automatically detects and differentiates between trades and positions files
+  - Skips positions files that contain unrealized P&L or average price data
+  - Validates CSV structure before processing
+  - Provides clear feedback when skipping incompatible files
+  - Prevents errors from processing wrong file types
+
+#### Enhanced Trade Side Parsing
+- **Extended Terminology Support**: Now supports both standard and alternative trade side terminology
+  - "Buy" and "Long" both recognized as buy positions
+  - "Sell" and "Short" both recognized as sell positions
+  - Case-insensitive matching for better compatibility
+  - Improved compatibility with various broker export formats
+
+### Development Improvements
+
+#### Claude Code Integration
+- **Custom Commands**: Added specialized Claude Code commands for development workflow
+  - `/commit`: Intelligent commit creation with logical grouping
+  - `/consolidate-imports`: Rust import organization and cleanup
+  - `/docit`: Automatic documentation updates
+- **Settings Configuration**: Pre-configured permissions for common development tasks
+  - Cargo commands for building and testing
+  - File reading and editing permissions
+  - Git operations support
+  - Web search capabilities for documentation
+
+### Documentation Updates
+
+#### Enhanced Terminal Output Formatting
+- **Color Alignment Fix Documentation**: Added comprehensive guide in CLAUDE.md
+  - Detailed explanation of ANSI color code alignment issues
+  - Correct patterns for preserving table and chart alignment
+  - Examples from actual codebase implementations
+  - Best practices for colored terminal output
+
+#### Updated Feature Descriptions
+- **README.md**: Enhanced feature descriptions with more detail
+  - Added commission analysis to performance metrics
+  - Expanded visualization descriptions
+  - Clarified data management capabilities
+  - Updated sample output to reflect actual system behavior
+
+- **CLAUDE.md**: Technical documentation improvements
+  - Added detailed module structure with file descriptions
+  - Enhanced architecture diagrams
+  - Updated code standards section with color formatting guidelines
+  - Added position management details
+
+### Bug Fixes & Improvements
+- Improved error handling for malformed CSV files
+- Better validation of trade data during parsing
+- Enhanced duplicate detection across multiple file formats
+
 ## Version 0.1.0 - Initial Release
 
 ### Core Features Implemented
