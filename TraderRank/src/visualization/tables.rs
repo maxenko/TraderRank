@@ -53,21 +53,22 @@ impl TableRenderer {
         for summary in summaries {
             let date_str = summary.date.format("%Y-%m-%d").to_string();
             let pnl_str = Self::format_currency_plain(summary.realized_pnl);
-            let pnl_display = if summary.realized_pnl > Decimal::ZERO {
-                pnl_str.green().to_string()
+            let pnl_display = format!("{:>12}", pnl_str);
+            let pnl_colored = if summary.realized_pnl > Decimal::ZERO {
+                pnl_display.green()
             } else if summary.realized_pnl < Decimal::ZERO {
-                pnl_str.red().to_string()
+                pnl_display.red()
             } else {
-                pnl_str
+                pnl_display.normal()
             };
 
-            println!("{:<12} {:>8} {:>7.1}% {:>9.2}/{:<9.2} {:>12}",
+            println!("{:<12} {:>8} {:>7.1}% {:>9.2}/{:<9.2} {}",
                 date_str,
                 summary.total_trades,
                 summary.win_rate,
                 summary.largest_win,
                 -summary.largest_loss.abs(),
-                pnl_display);
+                pnl_colored);
         }
     }
 
@@ -131,19 +132,20 @@ impl TableRenderer {
         for slot in &summary.time_slot_performance {
             let hour_str = format!("{:02}:00-{:02}:00", slot.hour, slot.hour + 1);
             let pnl_str = Self::format_currency_plain(slot.pnl);
-            let pnl_display = if slot.pnl > Decimal::ZERO {
-                pnl_str.green().to_string()
+            let pnl_display = format!("{:>12}", pnl_str);
+            let pnl_colored = if slot.pnl > Decimal::ZERO {
+                pnl_display.green()
             } else if slot.pnl < Decimal::ZERO {
-                pnl_str.red().to_string()
+                pnl_display.red()
             } else {
-                pnl_str
+                pnl_display.normal()
             };
 
-            println!("{:<15} {:>8} {:>7.1}% {:>12}",
+            println!("{:<15} {:>8} {:>7.1}% {}",
                 hour_str,
                 slot.trades,
                 slot.win_rate,
-                pnl_display);
+                pnl_colored);
         }
     }
 

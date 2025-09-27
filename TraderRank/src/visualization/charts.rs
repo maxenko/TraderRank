@@ -173,9 +173,9 @@ impl ChartRenderer {
                 .unwrap_or(0);
 
             let bar = if summary.realized_pnl > Decimal::ZERO {
-                format!("{:>30}", "█".repeat(normalized).green())
+                format!("{:>30}", "█".repeat(normalized)).green()
             } else {
-                format!("{:>30}", "█".repeat(normalized).red())
+                format!("{:>30}", "█".repeat(normalized)).red()
             };
 
             let pnl_str = if summary.realized_pnl >= Decimal::ZERO {
@@ -184,7 +184,7 @@ impl ChartRenderer {
                 format!("▼${:.2}", summary.realized_pnl.abs()).red()
             };
 
-            println!("{} {} {}", date_str.bright_white(), bar, pnl_str);
+            println!("{} {} {}", date_str.bright_white(), bar.to_string(), pnl_str);
         }
     }
 
@@ -211,9 +211,9 @@ impl ChartRenderer {
                 .unwrap_or(0);
 
             let bar = if summary.gross_pnl > Decimal::ZERO {
-                format!("{:>30}", "▓".repeat(normalized).green())
+                format!("{:>30}", "▓".repeat(normalized)).green()
             } else {
-                format!("{:>30}", "▓".repeat(normalized).red())
+                format!("{:>30}", "▓".repeat(normalized)).red()
             };
 
             let gross_pnl_str = if summary.gross_pnl >= Decimal::ZERO {
@@ -225,7 +225,7 @@ impl ChartRenderer {
             // Also show commission impact
             let commission_str = format!("(-${:.2})", summary.total_commission).yellow();
 
-            println!("{} {} {} {}", date_str.bright_white(), bar, gross_pnl_str, commission_str);
+            println!("{} {} {} {}", date_str.bright_white(), bar.to_string(), gross_pnl_str, commission_str);
         }
 
         // Show total commission impact

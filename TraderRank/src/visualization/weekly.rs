@@ -61,29 +61,32 @@ impl WeeklyRenderer {
             let gross_pnl_str = Self::format_currency(week.gross_pnl);
             let commission_str = Self::format_currency(week.total_commission);
 
+            // Format with width first, then apply color
+            let net_pnl_formatted = format!("{:>12}", net_pnl_str);
             let net_pnl_display = if week.realized_pnl > Decimal::ZERO {
-                net_pnl_str.green().bold().to_string()
+                net_pnl_formatted.green().bold()
             } else if week.realized_pnl < Decimal::ZERO {
-                net_pnl_str.red().bold().to_string()
+                net_pnl_formatted.red().bold()
             } else {
-                net_pnl_str.yellow().to_string()
+                net_pnl_formatted.yellow()
             };
 
+            let gross_pnl_formatted = format!("{:>12}", gross_pnl_str);
             let gross_pnl_display = if week.gross_pnl > Decimal::ZERO {
-                gross_pnl_str.green().to_string()
+                gross_pnl_formatted.green()
             } else if week.gross_pnl < Decimal::ZERO {
-                gross_pnl_str.red().to_string()
+                gross_pnl_formatted.red()
             } else {
-                gross_pnl_str.yellow().to_string()
+                gross_pnl_formatted.yellow()
             };
 
-            println!("{:<12} {:<16} {:>8} {:>6.1}% {:>12} {:>12.0} {:>10} {:>12} {:>12}",
+            println!("{:<12} {:<16} {:>8} {:>6.1}% {:>12} {:>12} {:>10} {} {}",
                 format!("Week {}", week.week_number),
                 date_range,
                 week.trading_days,
                 week.win_rate,
                 commission_str,
-                week.total_volume,
+                week.total_volume.round().to_i64().unwrap_or(0),
                 week.total_trades,
                 gross_pnl_display,
                 net_pnl_display

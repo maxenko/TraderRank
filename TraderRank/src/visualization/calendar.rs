@@ -176,11 +176,11 @@ impl CalendarRenderer {
                         } else if let Some(summary) = daily_map.get(&date) {
                             let pnl = summary.realized_pnl;
                             if pnl > Decimal::ZERO {
-                                print!("{:^8}", format!("+${:.0}", pnl).green().bold());
+                                print!("{}", format!("{:^8}", format!("+${:.0}", pnl)).green().bold());
                             } else if pnl < Decimal::ZERO {
-                                print!("{:^8}", format!("-${:.0}", pnl.abs()).red().bold());
+                                print!("{}", format!("{:^8}", format!("-${:.0}", pnl.abs())).red().bold());
                             } else {
-                                print!("{:^8}", "$0".yellow());
+                                print!("{}", format!("{:^8}", "$0").yellow());
                             }
                         } else {
                             print!("{:^8}", "-");
@@ -204,11 +204,11 @@ impl CalendarRenderer {
                         } else if let Some(summary) = daily_map.get(&date) {
                             let gross_pnl = summary.gross_pnl;
                             if gross_pnl > Decimal::ZERO {
-                                print!("{:^8}", format!("+${:.0}", gross_pnl).green().bold());
+                                print!("{}", format!("{:^8}", format!("+${:.0}", gross_pnl)).green().bold());
                             } else if gross_pnl < Decimal::ZERO {
-                                print!("{:^8}", format!("-${:.0}", gross_pnl.abs()).red().bold());
+                                print!("{}", format!("{:^8}", format!("-${:.0}", gross_pnl.abs())).red().bold());
                             } else {
-                                print!("{:^8}", "$0".yellow());
+                                print!("{}", format!("{:^8}", "$0").yellow());
                             }
                         } else {
                             print!("{:^8}", "-");
@@ -413,11 +413,11 @@ impl CalendarRenderer {
                         } else if let Some(pnl_val) = pnl {
                             // Weekday with trades
                             if *pnl_val > Decimal::ZERO {
-                                print!("{:^8}", format!("+${:.0}", pnl_val).green().bold());
+                                print!("{}", format!("{:^8}", format!("+${:.0}", pnl_val)).green().bold());
                             } else if *pnl_val < Decimal::ZERO {
-                                print!("{:^8}", format!("-${:.0}", pnl_val.abs()).red().bold());
+                                print!("{}", format!("{:^8}", format!("-${:.0}", pnl_val.abs())).red().bold());
                             } else {
-                                print!("{:^8}", "$0".yellow());
+                                print!("{}", format!("{:^8}", "$0").yellow());
                             }
                         } else {
                             // Weekday with no trades
@@ -653,11 +653,11 @@ impl CalendarRenderer {
                         } else if let Some(pnl_val) = gross_pnl {
                             // Weekday with trades
                             if *pnl_val > Decimal::ZERO {
-                                print!("{:^8}", format!("+${:.0}", pnl_val).green().bold());
+                                print!("{}", format!("{:^8}", format!("+${:.0}", pnl_val)).green().bold());
                             } else if *pnl_val < Decimal::ZERO {
-                                print!("{:^8}", format!("-${:.0}", pnl_val.abs()).red().bold());
+                                print!("{}", format!("{:^8}", format!("-${:.0}", pnl_val.abs())).red().bold());
                             } else {
-                                print!("{:^8}", "$0".yellow());
+                                print!("{}", format!("{:^8}", "$0").yellow());
                             }
                         } else {
                             // Weekday with no trades
