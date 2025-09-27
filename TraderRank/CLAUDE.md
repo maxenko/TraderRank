@@ -127,6 +127,36 @@ let trades = parse_csv(&path)
 - Use iterators over collections
 - Parallelize independent calculations with `rayon`
 
+### Terminal Output Formatting with Colors
+**CRITICAL**: When using the `colored` crate for terminal output alignment:
+
+The `colored` crate adds ANSI escape codes that are invisible but affect string length calculations. This breaks alignment when using format specifiers like `{:>10}` or `{:^8}`.
+
+**❌ WRONG - Breaks alignment:**
+```rust
+println!("{:>10}", value.to_string().green());  // Color codes counted in width
+println!("{:^8}", format!("${}", amount).red()); // Misaligned in tables
+```
+
+**✅ CORRECT - Preserves alignment:**
+```rust
+// Apply formatting BEFORE coloring
+println!("{}", format!("{:>10}", value).green());
+
+// For complex cases, format first, then color
+let formatted = format!("{:>10}", value);
+let colored = formatted.green();
+println!("{}", colored);
+```
+
+**Examples in codebase:**
+- `charts.rs`: Bar charts format width before coloring
+- `tables.rs`: Right-align values before applying color
+- `calendar.rs`: Center-align P&L values before coloring
+- `weekly.rs`: Format column widths before color application
+
+This ensures all tables, charts, and calendars maintain proper column alignment regardless of terminal colors.
+
 ## Development Workflow
 
 ### Testing
