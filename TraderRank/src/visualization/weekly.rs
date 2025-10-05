@@ -129,6 +129,8 @@ impl WeeklyRenderer {
         let chart_height = 15;
         let zero_line = if min_pnl >= Decimal::ZERO {
             chart_height - 1
+        } else if range == Decimal::ZERO {
+            chart_height / 2  // Center line when all values are the same
         } else {
             let zero_pos = (max_pnl / range * Decimal::from(chart_height)).to_i32().unwrap_or(0) as usize;
             zero_pos.min(chart_height - 1)
