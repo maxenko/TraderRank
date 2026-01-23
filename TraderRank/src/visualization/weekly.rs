@@ -425,4 +425,356 @@ impl WeeklyRenderer {
             format!("-${:.2}", amount.abs())
         }
     }
+
+    /// Renders a 6-month summary for longer-term perspective
+    pub fn render_six_month_summary(summary: &TradingSummary) {
+        if summary.monthly_summaries.is_empty() {
+            return;
+        }
+
+        println!("\n{}", "📈 6-Month Performance Summary".bold().magenta());
+        println!("{}", "═".repeat(120));
+
+        // Get last 6 months
+        let recent_months: Vec<_> = summary.monthly_summaries
+            .iter()
+            .rev()
+            .take(6)
+            .rev()
+            .collect();
+
+        if recent_months.is_empty() {
+            println!("  No monthly data available.");
+            return;
+        }
+
+        // Table header
+        println!("\n{}", "📅 Monthly Performance Breakdown".bold().yellow());
+        println!("{}", "─".repeat(120));
+        println!("{:<12} {:>8} {:>6} {:>12} {:>12} {:>10} {:>10} {:>14} {:>14}",
+            "Month", "Days", "Win%", "Commission", "Volume", "Trades", "Avg/Day", "Gross P&L", "Net P&L");
+        println!("{}", "─".repeat(120));
+
+        let mut total_pnl = Decimal::ZERO;
+        let mut total_gross = Decimal::ZERO;
+        let mut total_commission = Decimal::ZERO;
+        let mut total_trades: u32 = 0;
+        let mut total_days: u32 = 0;
+        let mut total_wins: u32 = 0;
+
+        for month in &recent_months {
+            let month_label = format!("{} '{:02}", &month.month_name[..3], month.year % 100);
+
+            let net_pnl_str = Self::format_currency(month.realized_pnl);
+            let gross_pnl_str = Self::format_currency(month.gross_pnl);
+            let commission_str = Self::format_currency(month.total_commission);
+            let avg_daily_str = Self::format_currency(month.avg_daily_pnl);
+
+            // Format with width first, then apply color
+            let net_pnl_formatted = format!("{:>14}", net_pnl_str);
+            let net_pnl_display = if month.realized_pnl > Decimal::ZERO {
+                net_pnl_formatted.green().bold()
+            } else if month.realized_pnl < Decimal::ZERO {
+                net_pnl_formatted.red().bold()
+            } else {
+                net_pnl_formatted.yellow()
+            };
+
+            let gross_pnl_formatted = format!("{:>14}", gross_pnl_str);
+            let gross_pnl_display = if month.gross_pnl > Decimal::ZERO {
+                gross_pnl_formatted.green()
+            } else if month.gross_pnl < Decimal::ZERO {
+                gross_pnl_formatted.red()
+            } else {
+                gross_pnl_formatted.yellow()
+            };
+
+            let avg_daily_formatted = format!("{:>10}", avg_daily_str);
+            let avg_daily_display = if month.avg_daily_pnl > Decimal::ZERO {
+                avg_daily_formatted.green()
+            } else if month.avg_daily_pnl < Decimal::ZERO {
+                avg_daily_formatted.red()
+            } else {
+                avg_daily_formatted.normal()
+            };
+
+            println!("{:<12} {:>8} {:>6.1}% {:>12} {:>12} {:>10} {} {} {}",
+                month_label,
+                month.trading_days,
+                month.win_rate,
+                commission_str,
+                month.total_volume.round().to_i64().unwrap_or(0),
+                month.total_trades,
+                avg_daily_display,
+                gross_pnl_display,
+                net_pnl_display
+            );
+
+            total_pnl += month.realized_pnl;
+            total_gross += month.gross_pnl;
+            total_commission += month.total_commission;
+            total_trades += month.total_trades;
+            total_days += month.trading_days;
+            total_wins += month.winning_trades;
+        }
+
+        // Print totals
+        println!("{}", "─".repeat(120));
+        let total_win_rate = if total_trades > 0 {
+            (total_wins as f64 / total_trades as f64) * 100.0
+        } else {
+            0.0
+        };
+        let avg_daily_total = if total_days > 0 {
+            total_pnl / Decimal::from(total_days)
+        } else {
+            Decimal::ZERO
+        };
+
+        let total_net_formatted = format!("{:>14}", Self::format_currency(total_pnl));
+        let total_net_display = if total_pnl > Decimal::ZERO {
+            total_net_formatted.green().bold()
+        } else if total_pnl < Decimal::ZERO {
+            total_net_formatted.red().bold()
+        } else {
+            total_net_formatted.yellow()
+        };
+
+        let total_gross_formatted = format!("{:>14}", Self::format_currency(total_gross));
+        let total_gross_display = if total_gross > Decimal::ZERO {
+            total_gross_formatted.green()
+        } else {
+            total_gross_formatted.red()
+        };
+
+        let avg_daily_formatted = format!("{:>10}", Self::format_currency(avg_daily_total));
+        let avg_daily_display = if avg_daily_total > Decimal::ZERO {
+            avg_daily_formatted.green()
+        } else if avg_daily_total < Decimal::ZERO {
+            avg_daily_formatted.red()
+        } else {
+            avg_daily_formatted.normal()
+        };
+
+        println!("{:<12} {:>8} {:>6.1}% {:>12} {:>12} {:>10} {} {} {}",
+            "TOTAL".bold(),
+            total_days,
+            total_win_rate,
+            Self::format_currency(total_commission),
+            "-",
+            total_trades,
+            avg_daily_display,
+            total_gross_display,
+            total_net_display
+        );
+
+        // Monthly P&L trend chart
+        Self::render_monthly_pnl_chart(&recent_months);
+
+        // Best and worst months
+        Self::render_best_worst_months(summary);
+
+        // Monthly consistency analysis
+        Self::render_monthly_consistency(&recent_months);
+    }
+
+    fn render_monthly_pnl_chart(months: &[&crate::models::MonthlySummary]) {
+        println!("\n{}", "📊 Monthly P&L Trend".bold().cyan());
+
+        if months.is_empty() {
+            return;
+        }
+
+        // Find max and min for scaling
+        let max_pnl = months.iter()
+            .map(|m| m.realized_pnl)
+            .max()
+            .unwrap_or(Decimal::ZERO);
+        let min_pnl = months.iter()
+            .map(|m| m.realized_pnl)
+            .min()
+            .unwrap_or(Decimal::ZERO);
+
+        let range = max_pnl - min_pnl;
+        let chart_width = 50;
+
+        for month in months {
+            let month_label = format!("{} '{:02}", &month.month_name[..3], month.year % 100);
+            let pnl = month.realized_pnl;
+
+            let bar_width = if range != Decimal::ZERO {
+                let normalized = if pnl >= Decimal::ZERO {
+                    (pnl / max_pnl.max(min_pnl.abs()) * Decimal::from(chart_width / 2))
+                        .to_i32().unwrap_or(0).abs() as usize
+                } else {
+                    (pnl.abs() / max_pnl.max(min_pnl.abs()) * Decimal::from(chart_width / 2))
+                        .to_i32().unwrap_or(0).abs() as usize
+                };
+                normalized.min(chart_width / 2)
+            } else {
+                0
+            };
+
+            let pnl_str = Self::format_currency(pnl);
+
+            if pnl >= Decimal::ZERO {
+                let padding = " ".repeat(chart_width / 2);
+                let bar = "█".repeat(bar_width);
+                println!("{:<10} {}│{} {:>12}",
+                    month_label,
+                    padding,
+                    bar.green(),
+                    pnl_str.green()
+                );
+            } else {
+                let padding = " ".repeat((chart_width / 2).saturating_sub(bar_width));
+                let bar = "█".repeat(bar_width);
+                println!("{:<10} {}{}│ {:>12}",
+                    month_label,
+                    padding,
+                    bar.red(),
+                    pnl_str.red()
+                );
+            }
+        }
+
+        // Print scale line
+        let scale_line = format!("{:<10} {}│",
+            "",
+            " ".repeat(chart_width / 2)
+        );
+        println!("{}", scale_line.bright_black());
+    }
+
+    fn render_best_worst_months(summary: &TradingSummary) {
+        println!("\n{}", "🏆 Best & Worst Monthly Performance".bold().cyan());
+        println!("{}", "─".repeat(80));
+
+        if let Some(((year, month), pnl)) = summary.best_month {
+            let month_name = match month {
+                1 => "January", 2 => "February", 3 => "March",
+                4 => "April", 5 => "May", 6 => "June",
+                7 => "July", 8 => "August", 9 => "September",
+                10 => "October", 11 => "November", 12 => "December",
+                _ => "Unknown",
+            };
+            let pnl_str = Self::format_currency(pnl);
+            println!("  {:<20} {} {} ({})",
+                "Best Month:".green().bold(),
+                month_name,
+                year,
+                pnl_str.green().bold()
+            );
+        }
+
+        if let Some(((year, month), pnl)) = summary.worst_month {
+            let month_name = match month {
+                1 => "January", 2 => "February", 3 => "March",
+                4 => "April", 5 => "May", 6 => "June",
+                7 => "July", 8 => "August", 9 => "September",
+                10 => "October", 11 => "November", 12 => "December",
+                _ => "Unknown",
+            };
+            let pnl_str = Self::format_currency(pnl);
+            println!("  {:<20} {} {} ({})",
+                "Worst Month:".red().bold(),
+                month_name,
+                year,
+                pnl_str.red().bold()
+            );
+        }
+
+        // Calculate average monthly P&L
+        if !summary.monthly_summaries.is_empty() {
+            let avg_monthly_pnl: Decimal = summary.monthly_summaries.iter()
+                .map(|m| m.realized_pnl)
+                .sum::<Decimal>() / Decimal::from(summary.monthly_summaries.len());
+
+            let avg_str = Self::format_currency(avg_monthly_pnl);
+            let avg_display = if avg_monthly_pnl > Decimal::ZERO {
+                avg_str.green().to_string()
+            } else if avg_monthly_pnl < Decimal::ZERO {
+                avg_str.red().to_string()
+            } else {
+                avg_str.yellow().to_string()
+            };
+
+            println!("  {:<20} {}",
+                "Average Monthly P&L:".bright_white(),
+                avg_display
+            );
+        }
+    }
+
+    fn render_monthly_consistency(months: &[&crate::models::MonthlySummary]) {
+        println!("\n{}", "📈 Monthly Consistency Analysis".bold().yellow());
+        println!("{}", "─".repeat(80));
+
+        let profitable_months = months.iter().filter(|m| m.realized_pnl > Decimal::ZERO).count();
+        let total_months = months.len();
+
+        let consistency_rate = if total_months > 0 {
+            (profitable_months as f64 / total_months as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        let consistency_display = if consistency_rate >= 70.0 {
+            format!("{:.1}%", consistency_rate).green().bold()
+        } else if consistency_rate >= 50.0 {
+            format!("{:.1}%", consistency_rate).yellow()
+        } else {
+            format!("{:.1}%", consistency_rate).red()
+        };
+
+        println!("  {:<25} {} ({}/{} months profitable)",
+            "Monthly Win Rate:".bright_white(),
+            consistency_display,
+            profitable_months,
+            total_months
+        );
+
+        // Calculate win streak
+        let mut current_streak = 0;
+        let mut max_win_streak = 0;
+        let mut max_loss_streak = 0;
+        let mut current_loss_streak = 0;
+
+        for month in months.iter() {
+            if month.realized_pnl > Decimal::ZERO {
+                current_streak += 1;
+                max_win_streak = max_win_streak.max(current_streak);
+                current_loss_streak = 0;
+            } else {
+                current_loss_streak += 1;
+                max_loss_streak = max_loss_streak.max(current_loss_streak);
+                current_streak = 0;
+            }
+        }
+
+        println!("  {:<25} {} months",
+            "Longest Win Streak:".bright_white(),
+            max_win_streak.to_string().green()
+        );
+
+        println!("  {:<25} {} months",
+            "Longest Loss Streak:".bright_white(),
+            max_loss_streak.to_string().red()
+        );
+
+        // Calculate month-over-month growth
+        if months.len() >= 2 {
+            let mut improvements = 0;
+            for i in 1..months.len() {
+                if months[i].realized_pnl > months[i-1].realized_pnl {
+                    improvements += 1;
+                }
+            }
+            let improvement_rate = (improvements as f64 / (months.len() - 1) as f64) * 100.0;
+            println!("  {:<25} {:.1}% of months improved over prior",
+                "Growth Trend:".bright_white(),
+                improvement_rate
+            );
+        }
+    }
 }

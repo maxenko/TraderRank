@@ -1,4 +1,4 @@
-use crate::models::{Trade, Side, DailySummary, WeeklySummary, TradingSummary, TimeSlotPerformance};
+use crate::models::{Trade, Side, DailySummary, WeeklySummary, MonthlySummary, TradingSummary, TimeSlotPerformance};
 use chrono::{DateTime, Utc, Datelike, Weekday};
 use rust_decimal::Decimal;
 use std::collections::{HashMap, HashSet};
@@ -59,11 +59,26 @@ impl TradingAnalytics {
             .min_by_key(|w| w.realized_pnl)
             .map(|w| ((w.year, w.week_number), w.realized_pnl));
 
+        // Calculate monthly summaries
+        let monthly_summaries = Self::calculate_monthly_summaries(&daily_summaries);
+
+        // Find best and worst months
+        let best_month = monthly_summaries
+            .iter()
+            .max_by_key(|m| m.realized_pnl)
+            .map(|m| ((m.year, m.month), m.realized_pnl));
+
+        let worst_month = monthly_summaries
+            .iter()
+            .min_by_key(|m| m.realized_pnl)
+            .map(|m| ((m.year, m.month), m.realized_pnl));
+
         TradingSummary {
             start_date: daily_summaries.first().map(|s| s.date).unwrap_or_else(|| Utc::now()),
             end_date: daily_summaries.last().map(|s| s.date).unwrap_or_else(|| Utc::now()),
             daily_summaries,
             weekly_summaries,
+            monthly_summaries,
             total_pnl,
             total_volume,
             total_trades,
@@ -72,6 +87,8 @@ impl TradingAnalytics {
             worst_day,
             best_week,
             worst_week,
+            best_month,
+            worst_month,
             most_profitable_hour,
             least_profitable_hour,
         }
@@ -100,106 +117,111 @@ impl TradingAnalytics {
         let mut total_commission = Decimal::ZERO;
         let mut total_volume = Decimal::ZERO;
 
-        // Process each symbol's trades separately
+        // Process each symbol's trades using chronological position tracking
+        // Only count P&L for positions that are OPENED and CLOSED within the same day
         for (symbol, mut symbol_trades) in trades_by_symbol {
-            // Skip symbols with only one trade (no matching pair)
+            // Calculate total volume for all trades (matched or not)
+            for trade in &symbol_trades {
+                total_volume += trade.quantity * trade.fill_price;
+            }
+
+            // Skip symbols with only one trade
             if symbol_trades.len() < 2 {
+                let trade = &symbol_trades[0];
                 eprintln!("Warning: Unmatched trade for {}: {} {} shares at ${}",
                     symbol,
-                    match symbol_trades[0].side {
+                    match trade.side {
                         Side::Buy => "Buy",
                         Side::Sell => "Sell",
                     },
-                    symbol_trades[0].quantity,
-                    symbol_trades[0].fill_price
+                    trade.quantity,
+                    trade.fill_price
                 );
-                total_commission += symbol_trades[0].commission;
-                // Still count the volume for unmatched trades
-                total_volume += symbol_trades[0].quantity * symbol_trades[0].fill_price;
                 continue;
             }
 
-            symbols_set.insert(symbol.clone());
+            // Sort trades by time for chronological processing
             symbol_trades.sort_by_key(|t| t.time);
 
+            // Track position and cost basis for intraday trades only
+            // Key insight: Only count LONG day trades (buy then sell)
+            // A sell at position=0 is closing an overnight position, not a day trade
             let mut position = Decimal::ZERO;
-            let mut avg_price = Decimal::ZERO;
+            let mut cost_basis = Decimal::ZERO;
+            let mut opening_commission = Decimal::ZERO;
+            let mut symbol_had_trades = false;
+            let mut skipped_sells = Decimal::ZERO;
 
             for trade in &symbol_trades {
-                total_commission += trade.commission;
-                // Add to total volume (quantity * fill_price for each trade)
-                total_volume += trade.quantity * trade.fill_price;
-
                 match trade.side {
                     Side::Buy => {
-                        if position < Decimal::ZERO {
-                            // Closing short position (buying back)
-                            let qty_to_close = trade.quantity.min(-position);
-                            if qty_to_close > Decimal::ZERO {
-                                let trade_pnl = (avg_price - trade.fill_price) * qty_to_close;
-                                realized_trades.push(trade_pnl);
-                                position += qty_to_close;
-                            }
-
-                            // If buying more than needed to close, start long position
-                            let qty_remaining = trade.quantity - qty_to_close;
-                            if qty_remaining > Decimal::ZERO {
-                                position = qty_remaining;
-                                avg_price = trade.fill_price;
-                            } else if position == Decimal::ZERO {
-                                avg_price = Decimal::ZERO;
-                            }
-                        } else if position == Decimal::ZERO {
-                            // Opening long position
-                            position = trade.quantity;
-                            avg_price = trade.fill_price;
-                        } else {
-                            // Adding to long position
-                            let total_value = avg_price * position + trade.fill_price * trade.quantity;
+                        if position > Decimal::ZERO {
+                            // Adding to existing long position
+                            let total_cost = cost_basis * position + trade.fill_price * trade.quantity;
                             position += trade.quantity;
-                            avg_price = total_value / position;
+                            cost_basis = total_cost / position;
+                            opening_commission += trade.commission;
+                        } else {
+                            // position <= 0: Opening a new long position
+                            // (ignore any negative position from skipped sells)
+                            position = trade.quantity;
+                            cost_basis = trade.fill_price;
+                            opening_commission = trade.commission;
                         }
                     }
                     Side::Sell => {
                         if position > Decimal::ZERO {
-                            // Closing long position (selling)
+                            // Closing long position (selling) - THIS IS A DAY TRADE
                             let qty_to_close = trade.quantity.min(position);
                             if qty_to_close > Decimal::ZERO {
-                                let trade_pnl = (trade.fill_price - avg_price) * qty_to_close;
+                                // P&L = (sell price - buy price) * qty
+                                let trade_pnl = (trade.fill_price - cost_basis) * qty_to_close;
+                                let trade_commission = opening_commission * qty_to_close / position
+                                    + trade.commission * qty_to_close / trade.quantity;
                                 realized_trades.push(trade_pnl);
-                                position -= qty_to_close;
+                                total_commission += trade_commission;
+                                symbol_had_trades = true;
                             }
 
-                            // Check if trying to sell more than owned
+                            // Update opening commission proportionally
+                            let remaining_ratio = (position - qty_to_close) / position;
+                            opening_commission = opening_commission * remaining_ratio;
+                            position -= qty_to_close;
+
                             let qty_remaining = trade.quantity - qty_to_close;
                             if qty_remaining > Decimal::ZERO {
-                                eprintln!("Warning: {} - Selling {} more shares than owned (had {} shares)",
-                                    symbol, qty_remaining, qty_to_close);
-                                // Don't open a short position from overselling
+                                // Sold more than owned - skip the excess (likely closing overnight position)
+                                skipped_sells += qty_remaining;
                             }
 
                             if position == Decimal::ZERO {
-                                avg_price = Decimal::ZERO;
+                                cost_basis = Decimal::ZERO;
+                                opening_commission = Decimal::ZERO;
                             }
-                        } else if position == Decimal::ZERO {
-                            // Opening short position
-                            position = -trade.quantity;
-                            avg_price = trade.fill_price;
                         } else {
-                            // Adding to short position
-                            let total_value = avg_price * (-position) + trade.fill_price * trade.quantity;
-                            position -= trade.quantity;
-                            avg_price = total_value / (-position);
+                            // position <= 0: Selling without a prior buy
+                            // This is closing an overnight position, not a day trade
+                            // Skip this sell for day trading P&L
+                            skipped_sells += trade.quantity;
                         }
                     }
                 }
             }
 
-            // Warn about unclosed positions
-            if position != Decimal::ZERO {
-                let position_type = if position > Decimal::ZERO { "long" } else { "short" };
-                eprintln!("Warning: {} - Unclosed {} position of {} shares",
-                    symbol, position_type, position.abs());
+            if symbol_had_trades {
+                symbols_set.insert(symbol.clone());
+            }
+
+            // Log skipped sells (overnight position closes)
+            if skipped_sells > Decimal::ZERO {
+                eprintln!("Warning: {} - {} shares sold without prior buy (overnight position close)",
+                    symbol, skipped_sells);
+            }
+
+            // Warn about unclosed long positions at end of day
+            if position > Decimal::ZERO {
+                eprintln!("Warning: {} - {} unclosed long shares at end of day",
+                    symbol, position);
             }
         }
 
@@ -208,7 +230,6 @@ impl TradingAnalytics {
         let mut losing_pnls = Vec::new();
 
         for pnl in realized_trades {
-            // Subtract commission from P&L (proportionally from total commission)
             if pnl > Decimal::ZERO {
                 summary.winning_trades += 1;
                 winning_pnls.push(pnl);
@@ -225,7 +246,7 @@ impl TradingAnalytics {
             summary.realized_pnl += pnl;
         }
 
-        // Subtract total commission from realized P&L
+        // Subtract matched commission from realized P&L (commission already filtered to matched trades only)
         summary.realized_pnl -= total_commission;
         summary.total_commission = total_commission;
         summary.total_volume = total_volume;
@@ -281,72 +302,58 @@ impl TradingAnalytics {
             for (_symbol, mut trades) in symbol_trades {
                 hour_trade_count += trades.len() as u32;
 
-                // Skip symbols with only one trade in this hour
-                if trades.len() < 2 {
-                    continue;
-                }
-
+                // Sort by time for chronological processing
                 trades.sort_by_key(|t| t.time);
 
-                // Calculate P&L for matched trades only
+                // Track position - only count LONG day trades (buy then sell)
                 let mut position = Decimal::ZERO;
-                let mut avg_price = Decimal::ZERO;
+                let mut cost_basis = Decimal::ZERO;
+                let mut opening_commission = Decimal::ZERO;
 
                 for trade in &trades {
                     match trade.side {
                         Side::Buy => {
-                            if position < Decimal::ZERO {
-                                let qty_to_close = trade.quantity.min(-position);
-                                if qty_to_close > Decimal::ZERO {
-                                    let trade_pnl = (avg_price - trade.fill_price) * qty_to_close - trade.commission;
-                                    hour_pnl += trade_pnl;
-                                    if trade_pnl > Decimal::ZERO {
-                                        hour_wins += 1;
-                                    } else if trade_pnl < Decimal::ZERO {
-                                        hour_losses += 1;
-                                    }
-                                }
+                            if position > Decimal::ZERO {
+                                // Adding to existing long
+                                let total_cost = cost_basis * position + trade.fill_price * trade.quantity;
                                 position += trade.quantity;
-                                if position >= Decimal::ZERO {
-                                    avg_price = trade.fill_price;
-                                }
+                                cost_basis = total_cost / position;
+                                opening_commission += trade.commission;
                             } else {
-                                if position == Decimal::ZERO {
-                                    avg_price = trade.fill_price;
-                                } else {
-                                    let total_value = avg_price * position + trade.fill_price * trade.quantity;
-                                    position += trade.quantity;
-                                    avg_price = total_value / position;
-                                }
+                                // Opening new long
+                                position = trade.quantity;
+                                cost_basis = trade.fill_price;
+                                opening_commission = trade.commission;
                             }
                         }
                         Side::Sell => {
                             if position > Decimal::ZERO {
+                                // Closing long - THIS IS A DAY TRADE
                                 let qty_to_close = trade.quantity.min(position);
                                 if qty_to_close > Decimal::ZERO {
-                                    let trade_pnl = (trade.fill_price - avg_price) * qty_to_close - trade.commission;
-                                    hour_pnl += trade_pnl;
-                                    if trade_pnl > Decimal::ZERO {
+                                    let trade_pnl = (trade.fill_price - cost_basis) * qty_to_close;
+                                    let trade_commission = opening_commission * qty_to_close / position
+                                        + trade.commission * qty_to_close / trade.quantity;
+                                    let net_pnl = trade_pnl - trade_commission;
+                                    hour_pnl += net_pnl;
+
+                                    if net_pnl > Decimal::ZERO {
                                         hour_wins += 1;
-                                    } else if trade_pnl < Decimal::ZERO {
+                                    } else if net_pnl < Decimal::ZERO {
                                         hour_losses += 1;
                                     }
                                 }
-                                position -= trade.quantity;
-                                if position <= Decimal::ZERO {
-                                    position = position.max(Decimal::ZERO);
-                                    if position == Decimal::ZERO {
-                                        avg_price = Decimal::ZERO;
-                                    }
+
+                                let remaining_ratio = (position - qty_to_close) / position;
+                                opening_commission = opening_commission * remaining_ratio;
+                                position -= qty_to_close;
+
+                                if position == Decimal::ZERO {
+                                    cost_basis = Decimal::ZERO;
+                                    opening_commission = Decimal::ZERO;
                                 }
-                            } else if position == Decimal::ZERO {
-                                position = -trade.quantity;
-                                avg_price = trade.fill_price;
-                            } else {
-                                let total_value = avg_price * (-position) + trade.fill_price * trade.quantity;
-                                position -= trade.quantity;
-                                avg_price = total_value / (-position);
                             }
+                            // Sells at position <= 0 are skipped (overnight closes)
                         }
                     }
                 }
@@ -456,5 +463,41 @@ impl TradingAnalytics {
         // Sort by week start date
         weekly_summaries.sort_by_key(|w| w.start_date);
         weekly_summaries
+    }
+
+    /// Regenerate monthly summaries from daily summaries (for backward compatibility with cached data)
+    pub fn regenerate_monthly_summaries(daily_summaries: &[DailySummary]) -> Vec<MonthlySummary> {
+        Self::calculate_monthly_summaries(daily_summaries)
+    }
+
+    fn calculate_monthly_summaries(daily_summaries: &[DailySummary]) -> Vec<MonthlySummary> {
+        if daily_summaries.is_empty() {
+            return Vec::new();
+        }
+
+        let mut month_groups: HashMap<(i32, u32), Vec<&DailySummary>> = HashMap::new();
+
+        // Group daily summaries by year and month
+        for daily in daily_summaries {
+            let year = daily.date.year();
+            let month = daily.date.month();
+            month_groups.entry((year, month))
+                .or_insert_with(Vec::new)
+                .push(daily);
+        }
+
+        let mut monthly_summaries: Vec<MonthlySummary> = month_groups
+            .into_iter()
+            .map(|((year, month), dailies)| {
+                let mut monthly = MonthlySummary::new(year, month);
+                let owned_dailies: Vec<DailySummary> = dailies.into_iter().cloned().collect();
+                monthly.update_from_daily_summaries(&owned_dailies);
+                monthly
+            })
+            .collect();
+
+        // Sort by year and month
+        monthly_summaries.sort_by_key(|m| (m.year, m.month));
+        monthly_summaries
     }
 }

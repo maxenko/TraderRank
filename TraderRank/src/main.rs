@@ -34,13 +34,33 @@ fn main() -> Result<()> {
     if new_files.is_empty() {
         println!("{}", "✅ All files already processed.".green());
 
-        if let Some(processed_data) = store.load_processed_data()? {
+        if let Some(mut processed_data) = store.load_processed_data()? {
             println!("{}", "📊 Loading cached analysis...".cyan());
+
+            // Regenerate monthly summaries if missing (backward compatibility with old cached data)
+            if processed_data.summary.monthly_summaries.is_empty() && !processed_data.summary.daily_summaries.is_empty() {
+                println!("{}", "📈 Regenerating monthly summaries...".yellow());
+                processed_data.summary.monthly_summaries = TradingAnalytics::regenerate_monthly_summaries(&processed_data.summary.daily_summaries);
+
+                // Find best/worst months
+                processed_data.summary.best_month = processed_data.summary.monthly_summaries
+                    .iter()
+                    .max_by_key(|m| m.realized_pnl)
+                    .map(|m| ((m.year, m.month), m.realized_pnl));
+                processed_data.summary.worst_month = processed_data.summary.monthly_summaries
+                    .iter()
+                    .min_by_key(|m| m.realized_pnl)
+                    .map(|m| ((m.year, m.month), m.realized_pnl));
+            }
+
             TableRenderer::render_summary(&processed_data.summary, 10);
             ChartRenderer::render_pnl_chart(&processed_data.summary.daily_summaries);
 
             // Add daily win rate chart
             ChartRenderer::render_daily_winrate_chart(&processed_data.summary.daily_summaries);
+
+            // Add win rate progression chart
+            ChartRenderer::render_winrate_progression(&processed_data.summary.daily_summaries);
 
             if let Some(last_day) = processed_data.summary.daily_summaries.last() {
                 ChartRenderer::render_hourly_distribution(last_day);
@@ -49,7 +69,10 @@ fn main() -> Result<()> {
             // Add weekly analysis
             WeeklyRenderer::render_weekly_analysis(&processed_data.summary);
 
-            // Add calendar views
+            // Add 6-month summary for longer-term perspective
+            WeeklyRenderer::render_six_month_summary(&processed_data.summary);
+
+            // Add calendar views (last 4 weeks)
             CalendarRenderer::render_combined_calendars(&processed_data.summary);
         } else {
             println!("{}", "⚠️  No processed data found.".yellow());
@@ -101,6 +124,9 @@ fn main() -> Result<()> {
         // Add daily win rate chart - right after P&L charts for visibility
         ChartRenderer::render_daily_winrate_chart(&summary.daily_summaries);
 
+        // Add win rate progression chart
+        ChartRenderer::render_winrate_progression(&summary.daily_summaries);
+
         if let Some(last_day) = summary.daily_summaries.last() {
             ChartRenderer::render_hourly_distribution(last_day);
         }
@@ -108,7 +134,10 @@ fn main() -> Result<()> {
         // Add weekly analysis
         WeeklyRenderer::render_weekly_analysis(&summary);
 
-        // Add calendar views
+        // Add 6-month summary for longer-term perspective
+        WeeklyRenderer::render_six_month_summary(&summary);
+
+        // Add calendar views (last 4 weeks)
         CalendarRenderer::render_combined_calendars(&summary);
 
         let periods = TimePatternAnalyzer::identify_best_trading_periods(&all_trades);
