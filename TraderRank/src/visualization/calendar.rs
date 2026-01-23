@@ -1,5 +1,5 @@
 use crate::models::{DailySummary, TradingSummary};
-use chrono::{Datelike, NaiveDate, Utc, Weekday};
+use chrono::{Datelike, Duration, NaiveDate, Utc, Weekday};
 use colored::*;
 use rust_decimal::Decimal;
 use std::collections::HashMap;
@@ -7,58 +7,58 @@ use std::collections::HashMap;
 pub struct CalendarRenderer;
 
 impl CalendarRenderer {
+    /// Renders a rolling 4-week calendar view (last 28 days) showing Net and Gross P&L side by side
     pub fn render_combined_calendars(summary: &TradingSummary) {
-        // Get current month or the month of the last trade
-        let current_date = if let Some(last_summary) = summary.daily_summaries.last() {
-            last_summary.date
+        // Get the last trade date as the end point
+        let end_date = if let Some(last_summary) = summary.daily_summaries.last() {
+            last_summary.date.date_naive()
         } else {
-            Utc::now()
+            Utc::now().date_naive()
         };
 
-        let year = current_date.year();
-        let month = current_date.month();
+        // Find the Sunday that starts the week containing end_date
+        let days_since_sunday = match end_date.weekday() {
+            Weekday::Sun => 0,
+            Weekday::Mon => 1,
+            Weekday::Tue => 2,
+            Weekday::Wed => 3,
+            Weekday::Thu => 4,
+            Weekday::Fri => 5,
+            Weekday::Sat => 6,
+        };
+        let current_week_start = end_date - Duration::days(days_since_sunday as i64);
+        // Go back 3 more weeks to show 4 full weeks total
+        let start_date = current_week_start - Duration::days(21);
 
         // Create a map of date to daily summary for quick lookup
-        let mut daily_map: HashMap<NaiveDate, &DailySummary> = HashMap::new();
-        for daily in &summary.daily_summaries {
-            let date = daily.date.date_naive();
-            if date.year() == year && date.month() == month {
-                daily_map.insert(date, daily);
-            }
-        }
-
-        // Calculate monthly statistics
-        let month_summaries: Vec<&DailySummary> = summary.daily_summaries
+        let daily_map: HashMap<NaiveDate, &DailySummary> = summary.daily_summaries
             .iter()
-            .filter(|s| s.date.year() == year && s.date.month() == month)
+            .map(|d| (d.date.date_naive(), d))
             .collect();
 
-        let monthly_pnl: Decimal = month_summaries.iter().map(|s| s.realized_pnl).sum();
-        let monthly_gross_pnl: Decimal = month_summaries.iter().map(|s| s.gross_pnl).sum();
-        let monthly_commission: Decimal = month_summaries.iter().map(|s| s.total_commission).sum();
+        // Calculate period statistics (for the 4 weeks)
+        let period_summaries: Vec<&DailySummary> = summary.daily_summaries
+            .iter()
+            .filter(|s| {
+                let date = s.date.date_naive();
+                date >= start_date && date <= end_date
+            })
+            .collect();
 
-        let month_name = match month {
-            1 => "January",
-            2 => "February",
-            3 => "March",
-            4 => "April",
-            5 => "May",
-            6 => "June",
-            7 => "July",
-            8 => "August",
-            9 => "September",
-            10 => "October",
-            11 => "November",
-            12 => "December",
-            _ => "Unknown",
-        };
+        let period_pnl: Decimal = period_summaries.iter().map(|s| s.realized_pnl).sum();
+        let period_gross_pnl: Decimal = period_summaries.iter().map(|s| s.gross_pnl).sum();
+        let period_commission: Decimal = period_summaries.iter().map(|s| s.total_commission).sum();
 
         // Print header
-        println!("\n{}", "📅 Monthly Calendar Comparison".bold().cyan());
+        println!("\n{}", "📅 Last 4 Weeks Calendar".bold().cyan());
         println!();
 
-        // Print month/year centered over both calendars
-        println!("{:^120}", format!("{} {}", month_name, year).bold().bright_yellow());
+        // Print date range centered over both calendars
+        let date_range = format!("{} - {}",
+            start_date.format("%b %d, %Y"),
+            end_date.format("%b %d, %Y")
+        );
+        println!("{:^120}", date_range.bold().bright_yellow());
         println!();
 
         // Print calendar titles side by side
@@ -78,143 +78,95 @@ impl CalendarRenderer {
         print!("    ");
         println!("{}", "─".repeat(56));
 
-        // Get the first day of the month and its weekday
-        let first_day = NaiveDate::from_ymd_opt(year, month, 1).unwrap();
-        let first_weekday = first_day.weekday();
+        // Build 4 weeks of dates
+        let mut weeks: Vec<Vec<NaiveDate>> = Vec::new();
+        let mut current_date = start_date;
 
-        // Calculate padding for the first week
-        let padding = match first_weekday {
-            Weekday::Sun => 0,
-            Weekday::Mon => 1,
-            Weekday::Tue => 2,
-            Weekday::Wed => 3,
-            Weekday::Thu => 4,
-            Weekday::Fri => 5,
-            Weekday::Sat => 6,
-        };
-
-        // Get the last day of the month
-        let last_day = if month == 12 {
-            NaiveDate::from_ymd_opt(year + 1, 1, 1).unwrap().pred_opt().unwrap()
-        } else {
-            NaiveDate::from_ymd_opt(year, month + 1, 1).unwrap().pred_opt().unwrap()
-        };
-
-        // Build calendar weeks
-        let mut weeks: Vec<Vec<Option<u32>>> = Vec::new();
-        let mut current_week: Vec<Option<u32>> = Vec::new();
-
-        // Add padding for first week
-        for _ in 0..padding {
-            current_week.push(None);
-        }
-
-        // Add all days
-        for day in 1..=last_day.day() {
-            current_week.push(Some(day));
-            if current_week.len() == 7 {
-                weeks.push(current_week.clone());
-                current_week.clear();
+        for _ in 0..4 {
+            let mut week: Vec<NaiveDate> = Vec::new();
+            for _ in 0..7 {
+                week.push(current_date);
+                current_date = current_date + Duration::days(1);
             }
-        }
-
-        // Add last partial week if any
-        if !current_week.is_empty() {
-            while current_week.len() < 7 {
-                current_week.push(None);
-            }
-            weeks.push(current_week);
+            weeks.push(week);
         }
 
         // Print calendar weeks side by side
         for week in &weeks {
-            // Print day numbers for both calendars
-            for day_opt in week {
-                match day_opt {
-                    Some(day) => {
-                        let date = NaiveDate::from_ymd_opt(year, month, *day).unwrap();
-                        let is_weekend = date.weekday() == Weekday::Sat || date.weekday() == Weekday::Sun;
-                        if is_weekend {
-                            print!("{:^8}", day.to_string().bright_black());
-                        } else {
-                            print!("{:^8}", day);
-                        }
-                    }
-                    None => print!("{:^8}", ""),
+            // Print date labels with month indicator for first of month
+            for date in week {
+                let is_weekend = date.weekday() == Weekday::Sat || date.weekday() == Weekday::Sun;
+                let label = if date.day() == 1 {
+                    format!("{}/{}", date.month(), date.day())
+                } else {
+                    date.day().to_string()
+                };
+
+                if is_weekend {
+                    print!("{:^8}", label.bright_black());
+                } else {
+                    print!("{:^8}", label);
                 }
             }
 
             print!("    "); // Spacing between calendars
 
-            // Print day numbers again for right calendar
-            for day_opt in week {
-                match day_opt {
-                    Some(day) => {
-                        let date = NaiveDate::from_ymd_opt(year, month, *day).unwrap();
-                        let is_weekend = date.weekday() == Weekday::Sat || date.weekday() == Weekday::Sun;
-                        if is_weekend {
-                            print!("{:^8}", day.to_string().bright_black());
-                        } else {
-                            print!("{:^8}", day);
-                        }
-                    }
-                    None => print!("{:^8}", ""),
+            // Print date labels again for right calendar
+            for date in week {
+                let is_weekend = date.weekday() == Weekday::Sat || date.weekday() == Weekday::Sun;
+                let label = if date.day() == 1 {
+                    format!("{}/{}", date.month(), date.day())
+                } else {
+                    date.day().to_string()
+                };
+
+                if is_weekend {
+                    print!("{:^8}", label.bright_black());
+                } else {
+                    print!("{:^8}", label);
                 }
             }
             println!();
 
-            // Print P&L values for both calendars
-            // Net P&L (left calendar)
-            for day_opt in week {
-                match day_opt {
-                    Some(day) => {
-                        let date = NaiveDate::from_ymd_opt(year, month, *day).unwrap();
-                        let is_weekend = date.weekday() == Weekday::Sat || date.weekday() == Weekday::Sun;
+            // Print Net P&L values (left calendar)
+            for date in week {
+                let is_weekend = date.weekday() == Weekday::Sat || date.weekday() == Weekday::Sun;
 
-                        if is_weekend {
-                            print!("{:^8}", "·".bright_black());
-                        } else if let Some(summary) = daily_map.get(&date) {
-                            let pnl = summary.realized_pnl;
-                            if pnl > Decimal::ZERO {
-                                print!("{}", format!("{:^8}", format!("+${:.0}", pnl)).green().bold());
-                            } else if pnl < Decimal::ZERO {
-                                print!("{}", format!("{:^8}", format!("-${:.0}", pnl.abs())).red().bold());
-                            } else {
-                                print!("{}", format!("{:^8}", "$0").yellow());
-                            }
-                        } else {
-                            print!("{:^8}", "-");
-                        }
+                if is_weekend {
+                    print!("{:^8}", "·".bright_black());
+                } else if let Some(daily) = daily_map.get(date) {
+                    let pnl = daily.realized_pnl;
+                    if pnl > Decimal::ZERO {
+                        print!("{}", format!("{:^8}", format!("+${:.0}", pnl)).green().bold());
+                    } else if pnl < Decimal::ZERO {
+                        print!("{}", format!("{:^8}", format!("-${:.0}", pnl.abs())).red().bold());
+                    } else {
+                        print!("{}", format!("{:^8}", "$0").yellow());
                     }
-                    None => print!("{:^8}", ""),
+                } else {
+                    print!("{:^8}", "-");
                 }
             }
 
             print!("    "); // Spacing between calendars
 
-            // Gross P&L (right calendar)
-            for day_opt in week {
-                match day_opt {
-                    Some(day) => {
-                        let date = NaiveDate::from_ymd_opt(year, month, *day).unwrap();
-                        let is_weekend = date.weekday() == Weekday::Sat || date.weekday() == Weekday::Sun;
+            // Print Gross P&L values (right calendar)
+            for date in week {
+                let is_weekend = date.weekday() == Weekday::Sat || date.weekday() == Weekday::Sun;
 
-                        if is_weekend {
-                            print!("{:^8}", "·".bright_black());
-                        } else if let Some(summary) = daily_map.get(&date) {
-                            let gross_pnl = summary.gross_pnl;
-                            if gross_pnl > Decimal::ZERO {
-                                print!("{}", format!("{:^8}", format!("+${:.0}", gross_pnl)).green().bold());
-                            } else if gross_pnl < Decimal::ZERO {
-                                print!("{}", format!("{:^8}", format!("-${:.0}", gross_pnl.abs())).red().bold());
-                            } else {
-                                print!("{}", format!("{:^8}", "$0").yellow());
-                            }
-                        } else {
-                            print!("{:^8}", "-");
-                        }
+                if is_weekend {
+                    print!("{:^8}", "·".bright_black());
+                } else if let Some(daily) = daily_map.get(date) {
+                    let gross_pnl = daily.gross_pnl;
+                    if gross_pnl > Decimal::ZERO {
+                        print!("{}", format!("{:^8}", format!("+${:.0}", gross_pnl)).green().bold());
+                    } else if gross_pnl < Decimal::ZERO {
+                        print!("{}", format!("{:^8}", format!("-${:.0}", gross_pnl.abs())).red().bold());
+                    } else {
+                        print!("{}", format!("{:^8}", "$0").yellow());
                     }
-                    None => print!("{:^8}", ""),
+                } else {
+                    print!("{:^8}", "-");
                 }
             }
             println!();
@@ -223,7 +175,7 @@ impl CalendarRenderer {
 
         // Print comparison summary
         println!("{}", "─".repeat(120));
-        println!("\n{}", "📊 Commission Impact Summary".bold().yellow());
+        println!("\n{}", "📊 4-Week Commission Impact Summary".bold().yellow());
         println!("{}", "─".repeat(120));
 
         let print_comparison = |label: &str, net: Decimal, gross: Decimal| {
@@ -252,13 +204,22 @@ impl CalendarRenderer {
                 label.bright_white(), net_display, gross_display, diff_str.bright_yellow());
         };
 
-        print_comparison("Month P&L:", monthly_pnl, monthly_gross_pnl);
-        println!("  {:<20} ${:.2}", "Total Commissions:".bright_white(), monthly_commission.abs());
+        print_comparison("4-Week P&L:", period_pnl, period_gross_pnl);
+        println!("  {:<20} ${:.2}", "Total Commissions:".bright_white(), period_commission.abs());
 
-        if monthly_gross_pnl != Decimal::ZERO {
-            let commission_pct = (monthly_commission.abs() / monthly_gross_pnl.abs()) * Decimal::from(100);
+        if period_gross_pnl != Decimal::ZERO {
+            let commission_pct = (period_commission.abs() / period_gross_pnl.abs()) * Decimal::from(100);
             println!("  {:<20} {:.1}%", "Commission % of Gross:".bright_white(), commission_pct);
         }
+
+        // Show trading days count
+        let trading_days = period_summaries.len();
+        let profitable_days = period_summaries.iter().filter(|s| s.realized_pnl > Decimal::ZERO).count();
+        println!("  {:<20} {} ({} profitable)",
+            "Trading Days:".bright_white(),
+            trading_days,
+            profitable_days
+        );
     }
 
     #[allow(dead_code)]
