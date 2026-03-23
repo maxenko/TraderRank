@@ -7,6 +7,8 @@ mod parser;
 mod sample_data;
 mod data_loader;
 mod trade_matcher;
+mod flex_fetcher;
+mod app_dirs;
 mod state;
 mod settings_store;
 mod components;

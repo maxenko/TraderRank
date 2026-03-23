@@ -45,19 +45,12 @@ fn find_data_dir() -> Option<PathBuf> {
     None
 }
 
-/// Parse all CSV files from Data/Source/ and return deduplicated trades
-fn load_trades_from_csv() -> Vec<Trade> {
-    let source_dir = match find_data_dir() {
-        Some(d) => d.join("Source"),
-        None => return Vec::new(),
-    };
-
-    if !source_dir.exists() {
-        eprintln!("No Data/Source/ directory found — skipping CSV trade loading.");
+/// Collect CSV files from a directory, if it exists.
+fn collect_csv_files(dir: &PathBuf) -> Vec<PathBuf> {
+    if !dir.exists() {
         return Vec::new();
     }
-
-    let csv_files: Vec<PathBuf> = match std::fs::read_dir(&source_dir) {
+    match std::fs::read_dir(dir) {
         Ok(entries) => entries
             .filter_map(|e| e.ok())
             .map(|e| e.path())
@@ -69,13 +62,38 @@ fn load_trades_from_csv() -> Vec<Trade> {
             })
             .collect(),
         Err(e) => {
-            eprintln!("Failed to read Data/Source/ directory: {}", e);
-            return Vec::new();
+            eprintln!("Failed to read directory {:?}: {}", dir, e);
+            Vec::new()
         }
-    };
+    }
+}
+
+/// Parse all CSV files from Data/Source/ and %LOCALAPPDATA%\TraderRank\imports\,
+/// returning deduplicated trades from both locations.
+fn load_trades_from_csv() -> Vec<Trade> {
+    let mut csv_files: Vec<PathBuf> = Vec::new();
+
+    // Source 1: project-relative Data/Source/ (manually placed CSVs)
+    if let Some(data_dir) = find_data_dir() {
+        let source = data_dir.join("Source");
+        let found = collect_csv_files(&source);
+        if !found.is_empty() {
+            eprintln!("Found {} CSV files in {:?}", found.len(), source);
+        }
+        csv_files.extend(found);
+    }
+
+    // Source 2: user data dir (IB Flex imports)
+    if let Some(imports) = crate::app_dirs::imports_dir() {
+        let found = collect_csv_files(&imports);
+        if !found.is_empty() {
+            eprintln!("Found {} CSV files in {:?}", found.len(), imports);
+        }
+        csv_files.extend(found);
+    }
 
     if csv_files.is_empty() {
-        eprintln!("No CSV files found in Data/Source/.");
+        eprintln!("No CSV files found in Data/Source/ or user imports directory.");
         return Vec::new();
     }
 

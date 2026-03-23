@@ -51,6 +51,12 @@ pub struct PersistedSettings {
     pub vtl_range_start: f64,
     #[serde(default = "default_one")]
     pub vtl_range_end: f64,
+
+    // IB Flex Web Service
+    #[serde(default)]
+    pub flex_token: String,
+    #[serde(default)]
+    pub flex_query_id: String,
 }
 
 fn default_dashboard_range() -> String { "1M".to_string() }
@@ -69,6 +75,35 @@ pub struct PersistedRConfig {
 }
 
 fn settings_path() -> Option<PathBuf> {
+    // Prefer standard user directory: %LOCALAPPDATA%\TraderRank\settings.json
+    if let Some(user_path) = crate::app_dirs::settings_path() {
+        // If the user-dir settings file already exists, use it
+        if user_path.exists() {
+            return Some(user_path);
+        }
+        // If no user-dir file yet, check for legacy file and migrate
+        if let Some(legacy) = legacy_settings_path() {
+            if legacy.exists() {
+                // Migrate: copy old settings to user dir, then use user dir
+                if let Some(parent) = user_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::copy(&legacy, &user_path);
+                return Some(user_path);
+            }
+        }
+        // No legacy file either — use user dir (will be created on first save)
+        if let Some(parent) = user_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        return Some(user_path);
+    }
+    // Fallback: legacy paths (no LOCALAPPDATA available)
+    legacy_settings_path()
+}
+
+/// Old settings path (relative to project Data/ dir). Kept for migration.
+fn legacy_settings_path() -> Option<PathBuf> {
     if let Ok(cwd) = std::env::current_dir() {
         let candidates = [
             cwd.join("../Data"),

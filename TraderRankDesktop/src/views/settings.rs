@@ -11,6 +11,14 @@ fn persist(theme: &Signal<Theme>, state: &Signal<AppState>) {
     settings_store::save_settings(&t, &s.r_configs);
 }
 
+#[derive(Clone, PartialEq)]
+enum FetchStatus {
+    Idle,
+    Fetching,
+    Success(String),
+    Error(String),
+}
+
 #[derive(Clone)]
 struct RConfigRow {
     week_start: NaiveDate,
@@ -28,6 +36,11 @@ pub fn Settings() -> Element {
     let mut state = use_context::<Signal<AppState>>();
 
     let current_theme = *theme.read();
+
+    let saved_settings = settings_store::load_raw();
+    let mut flex_token = use_signal(|| saved_settings.as_ref().map(|s| s.flex_token.clone()).unwrap_or_default());
+    let mut flex_query_id = use_signal(|| saved_settings.as_ref().map(|s| s.flex_query_id.clone()).unwrap_or_default());
+    let mut fetch_status = use_signal(|| FetchStatus::Idle);
 
     let mut sort_col = use_signal(|| "week".to_string());
     let mut sort_asc = use_signal(|| true);
@@ -195,19 +208,133 @@ pub fn Settings() -> Element {
                 }
             }
 
-            // Data Source (placeholder)
+            // IB Flex Web Service
             div { class: "card",
-                h3 { class: "card-title", "Data Source" }
-                div { class: "setting-row",
-                    span { class: "setting-label", "CSV Directory" }
-                    input {
-                        r#type: "text",
-                        class: "path-input",
-                        placeholder: "D:\\Trading\\Data\\Source",
-                        disabled: true,
+                h3 { class: "card-title", "Interactive Brokers — Flex Web Service" }
+                p { class: "setting-desc",
+                    "Pull trade history directly from your IB account. One-time setup (2 minutes):"
+                }
+                div { class: "ib-setup-steps",
+                    ol {
+                        li {
+                            "Log into "
+                            a {
+                                href: "https://www.interactivebrokers.com/portal",
+                                target: "_blank",
+                                class: "ib-link",
+                                "IB Account Management"
+                            }
+                        }
+                        li {
+                            "Go to "
+                            span { class: "ib-path", "Settings" }
+                            " \u{2192} "
+                            span { class: "ib-path", "Reporting" }
+                            " \u{2192} "
+                            span { class: "ib-path", "Flex Queries" }
+                        }
+                        li {
+                            "Create a new "
+                            strong { "Activity" }
+                            " Flex Query — select "
+                            strong { "Trades" }
+                            " section with all fields, date period = Last 365 days"
+                        }
+                        li {
+                            "Note the "
+                            strong { "Query ID" }
+                            " (shown next to the query name)"
+                        }
+                        li {
+                            "At the bottom of the Flex Queries page, click "
+                            span { class: "ib-path", "Generate Flex Web Service Token" }
+                            " — copy the token"
+                        }
                     }
                 }
-                p { class: "setting-desc muted", "Data source configuration coming soon." }
+
+                div { class: "ib-flex-form",
+                    div { class: "setting-row",
+                        span { class: "setting-label", "Flex Token" }
+                        input {
+                            r#type: "password",
+                            class: "flex-input",
+                            placeholder: "Paste your Flex Web Service token",
+                            value: "{flex_token.read()}",
+                            oninput: move |e: Event<FormData>| {
+                                let val = e.value().to_string();
+                                flex_token.set(val.clone());
+                                settings_store::update(|s| s.flex_token = val);
+                            }
+                        }
+                    }
+                    div { class: "setting-row",
+                        span { class: "setting-label", "Query ID" }
+                        input {
+                            r#type: "text",
+                            class: "flex-input",
+                            placeholder: "e.g. 123456",
+                            value: "{flex_query_id.read()}",
+                            oninput: move |e: Event<FormData>| {
+                                let val = e.value().to_string();
+                                flex_query_id.set(val.clone());
+                                settings_store::update(|s| s.flex_query_id = val);
+                            }
+                        }
+                    }
+                    div { class: "ib-flex-actions",
+                        button {
+                            class: "fetch-btn",
+                            disabled: matches!(*fetch_status.read(), FetchStatus::Fetching),
+                            onclick: move |_| {
+                                let token = flex_token.read().clone();
+                                let qid = flex_query_id.read().clone();
+                                fetch_status.set(FetchStatus::Fetching);
+                                spawn(async move {
+                                    match crate::flex_fetcher::fetch_and_save(&token, &qid).await {
+                                        Ok(count) => {
+                                            // Reload data from all CSV sources
+                                            let mut new_state = crate::data_loader::load_app_state();
+                                            // Preserve user's R-configs
+                                            let old_configs = state.read().r_configs.clone();
+                                            for saved_r in &old_configs {
+                                                if let Some(existing) = new_state.r_configs.iter_mut().find(|c| c.week_start == saved_r.week_start) {
+                                                    existing.r_value = saved_r.r_value;
+                                                }
+                                            }
+                                            state.set(new_state);
+                                            fetch_status.set(FetchStatus::Success(
+                                                format!("Imported {} trades. Data reloaded.", count)
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            fetch_status.set(FetchStatus::Error(format!("{}", e)));
+                                        }
+                                    }
+                                });
+                            },
+                            {match *fetch_status.read() {
+                                FetchStatus::Fetching => "Fetching...",
+                                _ => "Fetch Trades from IB",
+                            }}
+                        }
+                        {match &*fetch_status.read() {
+                            FetchStatus::Success(msg) => rsx! {
+                                span { class: "fetch-status success", "{msg}" }
+                            },
+                            FetchStatus::Error(msg) => rsx! {
+                                span { class: "fetch-status error", "{msg}" }
+                            },
+                            FetchStatus::Fetching => rsx! {
+                                span { class: "fetch-status fetching", "Connecting to IB..." }
+                            },
+                            FetchStatus::Idle => rsx! {},
+                        }}
+                    }
+                }
+                p { class: "setting-desc muted",
+                    "Trades are saved to %LOCALAPPDATA%\\TraderRank\\imports\\. The app will use them on next launch."
+                }
             }
         }
     }
