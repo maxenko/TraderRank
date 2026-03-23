@@ -411,6 +411,7 @@ pub fn generate_sample_data() -> AppState {
         weekly_summaries,
         monthly_summaries,
         trades: all_trades,
+        matched_trades: Vec::new(),
         total_pnl,
         total_trades,
         total_wins,

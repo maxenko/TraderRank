@@ -2,8 +2,11 @@
 
 mod theme;
 mod models;
+mod analytics;
+mod parser;
 mod sample_data;
 mod data_loader;
+mod trade_matcher;
 mod state;
 mod settings_store;
 mod components;
@@ -21,6 +24,8 @@ enum Route {
     Dashboard {},
     #[route("/timeline")]
     Timeline {},
+    #[route("/visual")]
+    VisualTimeline {},
     #[route("/trades")]
     Trades {},
     #[route("/analytics")]
@@ -30,7 +35,16 @@ enum Route {
 }
 
 fn main() {
-    dioxus::launch(App);
+    dioxus::LaunchBuilder::desktop()
+        .with_cfg(
+            dioxus::desktop::Config::new()
+                .with_window(
+                    dioxus::desktop::tao::window::WindowBuilder::new()
+                        .with_title("TraderRank")
+                        .with_always_on_top(false)
+                )
+        )
+        .launch(App);
 }
 
 #[component]
@@ -80,6 +94,7 @@ fn AppLayout() -> Element {
                 div { class: "nav-tabs",
                     Link { class: "nav-tab", to: Route::Dashboard {}, "Dashboard" }
                     Link { class: "nav-tab", to: Route::Timeline {}, "Timeline" }
+                    Link { class: "nav-tab", to: Route::VisualTimeline {}, "Visual" }
                     Link { class: "nav-tab", to: Route::Trades {}, "Trades" }
                     Link { class: "nav-tab", to: Route::Analytics {}, "Analytics" }
                     Link { class: "nav-tab", to: Route::Settings {}, "Settings" }
@@ -100,6 +115,7 @@ fn AppLayout() -> Element {
 #[component]
 fn ThemeToggle() -> Element {
     let mut theme = use_context::<Signal<Theme>>();
+    let state = use_context::<Signal<state::AppState>>();
     let current = *theme.read();
     let icon = match current {
         Theme::Dark => "\u{2600}\u{FE0F}",
@@ -109,7 +125,12 @@ fn ThemeToggle() -> Element {
     rsx! {
         button {
             class: "theme-toggle",
-            onclick: move |_| theme.set(current.toggle()),
+            onclick: move |_| {
+                let new_theme = current.toggle();
+                theme.set(new_theme);
+                let s = state.read();
+                settings_store::save_settings(&new_theme, &s.r_configs);
+            },
             "{icon}"
         }
     }
@@ -118,25 +139,30 @@ fn ThemeToggle() -> Element {
 // Route components delegate to views
 #[component]
 fn Dashboard() -> Element {
-    views::dashboard::Dashboard()
+    rsx! { views::dashboard::Dashboard {} }
 }
 
 #[component]
 fn Timeline() -> Element {
-    views::timeline::Timeline()
+    rsx! { views::timeline::Timeline {} }
+}
+
+#[component]
+fn VisualTimeline() -> Element {
+    rsx! { views::visual_timeline::VisualTimeline {} }
 }
 
 #[component]
 fn Trades() -> Element {
-    views::trades::Trades()
+    rsx! { views::trades::Trades {} }
 }
 
 #[component]
 fn Analytics() -> Element {
-    views::analytics::Analytics()
+    rsx! { views::analytics::Analytics {} }
 }
 
 #[component]
 fn Settings() -> Element {
-    views::settings::Settings()
+    rsx! { views::settings::Settings {} }
 }

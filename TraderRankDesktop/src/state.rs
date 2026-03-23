@@ -25,12 +25,14 @@ pub struct HourlyStats {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct AppState {
     // Raw data
     pub daily_summaries: Vec<DailySummary>,
     pub weekly_summaries: Vec<WeeklySummary>,
     pub monthly_summaries: Vec<MonthlySummary>,
     pub trades: Vec<Trade>,
+    pub matched_trades: Vec<MatchedTrade>,
 
     // Overall metrics
     pub total_pnl: Decimal,
