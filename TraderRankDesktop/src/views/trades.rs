@@ -1,14 +1,16 @@
 use dioxus::prelude::*;
 use crate::components::*;
+use crate::settings_store;
 use crate::state::AppState;
 use rust_decimal::Decimal;
 
 #[component]
 pub fn Trades() -> Element {
     let state = use_context::<Signal<AppState>>();
-    let mut sort_col = use_signal(|| "time".to_string());
-    let mut sort_asc = use_signal(|| false); // most recent first
-    let mut max_entries = use_signal(|| 100_usize);
+    let saved = settings_store::load_raw();
+    let mut sort_col = use_signal(|| saved.as_ref().map(|s| s.trades_sort_col.clone()).unwrap_or_else(|| "time".to_string()));
+    let mut sort_asc = use_signal(|| saved.as_ref().map(|s| s.trades_sort_asc).unwrap_or(false));
+    let mut max_entries = use_signal(|| saved.as_ref().map(|s| s.trades_max_entries).unwrap_or(100));
 
     let data = state.read();
     let matched = &data.matched_trades;
@@ -103,7 +105,10 @@ pub fn Trades() -> Element {
                                     rsx! {
                                         button {
                                             class: "{cls}",
-                                            onclick: move |_| max_entries.set(val),
+                                            onclick: move |_| {
+                                                max_entries.set(val);
+                                                settings_store::update(|s| s.trades_max_entries = val);
+                                            },
                                             "{val}"
                                         }
                                     }
@@ -144,6 +149,9 @@ pub fn Trades() -> Element {
                                                                 sort_col.set(col_id.clone());
                                                                 sort_asc.set(default_asc);
                                                             }
+                                                            let sc = sort_col.read().clone();
+                                                            let sa = *sort_asc.read();
+                                                            settings_store::update(|s| { s.trades_sort_col = sc; s.trades_sort_asc = sa; });
                                                         }
                                                     },
                                                     "{label}"

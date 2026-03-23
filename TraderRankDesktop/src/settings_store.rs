@@ -5,20 +5,70 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Debug, Serialize, Deserialize)]
+/// All persisted UI state — the entire app session
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PersistedSettings {
+    // Theme
+    #[serde(default)]
     pub theme: String,
+
+    // R-unit configs
+    #[serde(default)]
     pub r_configs: Vec<PersistedRConfig>,
+
+    // Dashboard
+    #[serde(default = "default_dashboard_range")]
+    pub dashboard_range: String,
+
+    // Timeline
+    #[serde(default = "default_timeline_mode")]
+    pub timeline_mode: String,
+    #[serde(default = "default_max_entries")]
+    pub timeline_max_entries: usize,
+    #[serde(default = "default_sort_col_period")]
+    pub timeline_sort_col: String,
+    #[serde(default)]
+    pub timeline_sort_asc: bool,
+
+    // Trades
+    #[serde(default = "default_max_entries")]
+    pub trades_max_entries: usize,
+    #[serde(default = "default_sort_col_time")]
+    pub trades_sort_col: String,
+    #[serde(default)]
+    pub trades_sort_asc: bool,
+
+    // Analytics
+    #[serde(default)]
+    pub analytics_tab: String,
+    #[serde(default = "default_analytics_range")]
+    pub analytics_range: String,
+
+    // Visual timeline
+    #[serde(default = "default_zoom")]
+    pub vtl_zoom: f64,
+    #[serde(default)]
+    pub vtl_range_start: f64,
+    #[serde(default = "default_one")]
+    pub vtl_range_end: f64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+fn default_dashboard_range() -> String { "1M".to_string() }
+fn default_timeline_mode() -> String { "Weekly".to_string() }
+fn default_max_entries() -> usize { 100 }
+fn default_sort_col_period() -> String { "period".to_string() }
+fn default_sort_col_time() -> String { "time".to_string() }
+fn default_analytics_range() -> String { "All".to_string() }
+fn default_zoom() -> f64 { 1.0 }
+fn default_one() -> f64 { 1.0 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedRConfig {
     pub week_start: String,
     pub r_value: String,
 }
 
 fn settings_path() -> Option<PathBuf> {
-    // Store next to the Data directory
     if let Ok(cwd) = std::env::current_dir() {
         let candidates = [
             cwd.join("../Data"),
@@ -47,29 +97,35 @@ fn settings_path() -> Option<PathBuf> {
     None
 }
 
-pub fn save_settings(theme: &Theme, r_configs: &[WeeklyRConfig]) {
+pub fn save_all(settings: &PersistedSettings) {
     let Some(path) = settings_path() else { return };
-
-    let settings = PersistedSettings {
-        theme: theme.as_str().to_string(),
-        r_configs: r_configs
-            .iter()
-            .map(|c| PersistedRConfig {
-                week_start: c.week_start.to_string(),
-                r_value: c.r_value.to_string(),
-            })
-            .collect(),
-    };
-
-    if let Ok(json) = serde_json::to_string_pretty(&settings) {
+    if let Ok(json) = serde_json::to_string_pretty(settings) {
         let _ = std::fs::write(&path, json);
     }
 }
 
-pub fn load_settings() -> Option<(Theme, Vec<WeeklyRConfig>)> {
+pub fn save_settings(theme: &Theme, r_configs: &[WeeklyRConfig]) {
+    // Load existing, update theme + r_configs, save
+    let mut settings = load_raw().unwrap_or_default();
+    settings.theme = theme.as_str().to_string();
+    settings.r_configs = r_configs
+        .iter()
+        .map(|c| PersistedRConfig {
+            week_start: c.week_start.to_string(),
+            r_value: c.r_value.to_string(),
+        })
+        .collect();
+    save_all(&settings);
+}
+
+pub fn load_raw() -> Option<PersistedSettings> {
     let path = settings_path()?;
     let json = std::fs::read_to_string(&path).ok()?;
-    let settings: PersistedSettings = serde_json::from_str(&json).ok()?;
+    serde_json::from_str(&json).ok()
+}
+
+pub fn load_settings() -> Option<(Theme, Vec<WeeklyRConfig>)> {
+    let settings = load_raw()?;
 
     let theme = match settings.theme.as_str() {
         "light" => Theme::Light,
@@ -87,4 +143,12 @@ pub fn load_settings() -> Option<(Theme, Vec<WeeklyRConfig>)> {
         .collect();
 
     Some((theme, r_configs))
+}
+
+/// Update a single field and persist. Loads current settings, applies the
+/// mutation closure, then saves.
+pub fn update<F: FnOnce(&mut PersistedSettings)>(f: F) {
+    let mut settings = load_raw().unwrap_or_default();
+    f(&mut settings);
+    save_all(&settings);
 }

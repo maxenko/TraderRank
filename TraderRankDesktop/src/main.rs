@@ -38,6 +38,7 @@ fn main() {
     dioxus::LaunchBuilder::desktop()
         .with_cfg(
             dioxus::desktop::Config::new()
+                .with_background_color((12, 13, 20, 255)) // matches --bg-primary #0c0d14
                 .with_window(
                     dioxus::desktop::tao::window::WindowBuilder::new()
                         .with_title("TraderRank")

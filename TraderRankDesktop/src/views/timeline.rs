@@ -1,6 +1,7 @@
 use dioxus::prelude::*;
 use chrono::Datelike;
 use crate::components::*;
+use crate::settings_store;
 use crate::state::AppState;
 use rust_decimal::Decimal;
 
@@ -9,6 +10,24 @@ enum TimelineMode {
     Daily,
     Weekly,
     Monthly,
+}
+
+impl TimelineMode {
+    fn as_str(&self) -> &'static str {
+        match self {
+            TimelineMode::Daily => "Daily",
+            TimelineMode::Weekly => "Weekly",
+            TimelineMode::Monthly => "Monthly",
+        }
+    }
+
+    fn from_str(s: &str) -> Self {
+        match s {
+            "Daily" => TimelineMode::Daily,
+            "Monthly" => TimelineMode::Monthly,
+            _ => TimelineMode::Weekly,
+        }
+    }
 }
 
 /// A flattened row used for sorting across all three modes.
@@ -36,11 +55,11 @@ pub fn Timeline() -> Element {
     let state = use_context::<Signal<AppState>>();
     let data = state.read();
 
-    let mut mode = use_signal(|| TimelineMode::Weekly);
-    let mut max_entries = use_signal(|| 100_usize);
-
-    let mut sort_col = use_signal(|| "period".to_string());
-    let mut sort_asc = use_signal(|| false);
+    let saved = settings_store::load_raw();
+    let mut mode = use_signal(|| saved.as_ref().map(|s| TimelineMode::from_str(&s.timeline_mode)).unwrap_or(TimelineMode::Weekly));
+    let mut max_entries = use_signal(|| saved.as_ref().map(|s| s.timeline_max_entries).unwrap_or(100));
+    let mut sort_col = use_signal(|| saved.as_ref().map(|s| s.timeline_sort_col.clone()).unwrap_or_else(|| "period".to_string()));
+    let mut sort_asc = use_signal(|| saved.as_ref().map(|s| s.timeline_sort_asc).unwrap_or(false));
 
     let current_mode = *mode.read();
     let current_sort_col = sort_col.read().clone();
@@ -165,17 +184,26 @@ pub fn Timeline() -> Element {
                 div { class: "mode-tabs",
                     button {
                         class: if current_mode == TimelineMode::Daily { "tab active" } else { "tab" },
-                        onclick: move |_| { mode.set(TimelineMode::Daily); },
+                        onclick: move |_| {
+                            mode.set(TimelineMode::Daily);
+                            settings_store::update(|s| s.timeline_mode = TimelineMode::Daily.as_str().to_string());
+                        },
                         "Daily"
                     }
                     button {
                         class: if current_mode == TimelineMode::Weekly { "tab active" } else { "tab" },
-                        onclick: move |_| { mode.set(TimelineMode::Weekly); },
+                        onclick: move |_| {
+                            mode.set(TimelineMode::Weekly);
+                            settings_store::update(|s| s.timeline_mode = TimelineMode::Weekly.as_str().to_string());
+                        },
                         "Weekly"
                     }
                     button {
                         class: if current_mode == TimelineMode::Monthly { "tab active" } else { "tab" },
-                        onclick: move |_| { mode.set(TimelineMode::Monthly); },
+                        onclick: move |_| {
+                            mode.set(TimelineMode::Monthly);
+                            settings_store::update(|s| s.timeline_mode = TimelineMode::Monthly.as_str().to_string());
+                        },
                         "Monthly"
                     }
                 }
@@ -192,7 +220,10 @@ pub fn Timeline() -> Element {
                                     rsx! {
                                         button {
                                             class: "{cls}",
-                                            onclick: move |_| max_entries.set(val),
+                                            onclick: move |_| {
+                                                max_entries.set(val);
+                                                settings_store::update(|s| s.timeline_max_entries = val);
+                                            },
                                             "{val}"
                                         }
                                     }
@@ -220,7 +251,9 @@ pub fn Timeline() -> Element {
                                         sort_col.set("period".to_string());
                                         sort_asc.set(false);
                                     }
-
+                                    let sc = sort_col.read().clone();
+                                    let sa = *sort_asc.read();
+                                    settings_store::update(|s| { s.timeline_sort_col = sc; s.timeline_sort_asc = sa; });
                                 },
                                 "Period{sort_indicator(\"period\")}"
                             }
@@ -235,7 +268,9 @@ pub fn Timeline() -> Element {
                                         sort_col.set("pnl".to_string());
                                         sort_asc.set(false);
                                     }
-
+                                    let sc = sort_col.read().clone();
+                                    let sa = *sort_asc.read();
+                                    settings_store::update(|s| { s.timeline_sort_col = sc; s.timeline_sort_asc = sa; });
                                 },
                                 "P&L ($){sort_indicator(\"pnl\")}"
                             }
@@ -250,7 +285,9 @@ pub fn Timeline() -> Element {
                                         sort_col.set("r".to_string());
                                         sort_asc.set(false);
                                     }
-
+                                    let sc = sort_col.read().clone();
+                                    let sa = *sort_asc.read();
+                                    settings_store::update(|s| { s.timeline_sort_col = sc; s.timeline_sort_asc = sa; });
                                 },
                                 "P&L (R){sort_indicator(\"r\")}"
                             }
@@ -265,7 +302,9 @@ pub fn Timeline() -> Element {
                                         sort_col.set("win".to_string());
                                         sort_asc.set(false);
                                     }
-
+                                    let sc = sort_col.read().clone();
+                                    let sa = *sort_asc.read();
+                                    settings_store::update(|s| { s.timeline_sort_col = sc; s.timeline_sort_asc = sa; });
                                 },
                                 "Win %{sort_indicator(\"win\")}"
                             }
@@ -280,7 +319,9 @@ pub fn Timeline() -> Element {
                                         sort_col.set("trades".to_string());
                                         sort_asc.set(false);
                                     }
-
+                                    let sc = sort_col.read().clone();
+                                    let sa = *sort_asc.read();
+                                    settings_store::update(|s| { s.timeline_sort_col = sc; s.timeline_sort_asc = sa; });
                                 },
                                 "Trades{sort_indicator(\"trades\")}"
                             }
@@ -295,7 +336,9 @@ pub fn Timeline() -> Element {
                                         sort_col.set("wl".to_string());
                                         sort_asc.set(false);
                                     }
-
+                                    let sc = sort_col.read().clone();
+                                    let sa = *sort_asc.read();
+                                    settings_store::update(|s| { s.timeline_sort_col = sc; s.timeline_sort_asc = sa; });
                                 },
                                 "W/L{sort_indicator(\"wl\")}"
                             }
@@ -310,7 +353,9 @@ pub fn Timeline() -> Element {
                                         sort_col.set("commission".to_string());
                                         sort_asc.set(false);
                                     }
-
+                                    let sc = sort_col.read().clone();
+                                    let sa = *sort_asc.read();
+                                    settings_store::update(|s| { s.timeline_sort_col = sc; s.timeline_sort_asc = sa; });
                                 },
                                 "Commission{sort_indicator(\"commission\")}"
                             }

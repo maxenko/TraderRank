@@ -1,5 +1,6 @@
 use dioxus::prelude::*;
 use crate::components::*;
+use crate::settings_store;
 use crate::state::AppState;
 use rust_decimal::Decimal;
 
@@ -25,6 +26,18 @@ impl ChartRange {
         }
     }
 
+    fn from_label(s: &str) -> Self {
+        match s {
+            "1W" => ChartRange::OneWeek,
+            "2W" => ChartRange::TwoWeeks,
+            "1M" => ChartRange::OneMonth,
+            "3M" => ChartRange::ThreeMonths,
+            "6M" => ChartRange::SixMonths,
+            "All" => ChartRange::All,
+            _ => ChartRange::OneMonth,
+        }
+    }
+
     fn max_days(&self) -> usize {
         match self {
             ChartRange::OneWeek => 5,
@@ -42,7 +55,11 @@ pub fn Dashboard() -> Element {
     let state = use_context::<Signal<AppState>>();
     let data = state.read();
 
-    let mut chart_range = use_signal(|| ChartRange::OneMonth);
+    let mut chart_range = use_signal(|| {
+        settings_store::load_raw()
+            .map(|s| ChartRange::from_label(&s.dashboard_range))
+            .unwrap_or(ChartRange::OneMonth)
+    });
     let current_range = *chart_range.read();
 
     // Filter daily summaries by range — this drives EVERYTHING
@@ -183,7 +200,10 @@ pub fn Dashboard() -> Element {
                             rsx! {
                                 button {
                                     class: if is_active { "range-tab active" } else { "range-tab" },
-                                    onclick: move |_| chart_range.set(r_val),
+                                    onclick: move |_| {
+                                        chart_range.set(r_val);
+                                        settings_store::update(|s| s.dashboard_range = r_val.label().to_string());
+                                    },
                                     "{r_val.label()}"
                                 }
                             }

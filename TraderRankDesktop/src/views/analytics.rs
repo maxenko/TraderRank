@@ -2,6 +2,7 @@ use dioxus::prelude::*;
 use chrono::Datelike;
 use crate::components::*;
 use crate::state::AppState;
+use crate::settings_store;
 use rust_decimal::Decimal;
 use std::collections::HashMap;
 
@@ -13,6 +14,30 @@ enum AnalyticsTab {
     Symbols,
     TradeQuality,
     Progression,
+}
+
+impl AnalyticsTab {
+    fn as_str(&self) -> &'static str {
+        match self {
+            AnalyticsTab::Overview => "Overview",
+            AnalyticsTab::TimeOfDay => "TimeOfDay",
+            AnalyticsTab::DayOfWeek => "DayOfWeek",
+            AnalyticsTab::Symbols => "Symbols",
+            AnalyticsTab::TradeQuality => "TradeQuality",
+            AnalyticsTab::Progression => "Progression",
+        }
+    }
+
+    fn from_str(s: &str) -> Self {
+        match s {
+            "TimeOfDay" => AnalyticsTab::TimeOfDay,
+            "DayOfWeek" => AnalyticsTab::DayOfWeek,
+            "Symbols" => AnalyticsTab::Symbols,
+            "TradeQuality" => AnalyticsTab::TradeQuality,
+            "Progression" => AnalyticsTab::Progression,
+            _ => AnalyticsTab::Overview,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -46,6 +71,28 @@ impl TimeRange {
             TimeRange::All => usize::MAX,
         }
     }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            TimeRange::OneWeek => "1W",
+            TimeRange::TwoWeeks => "2W",
+            TimeRange::OneMonth => "1M",
+            TimeRange::ThreeMonths => "3M",
+            TimeRange::SixMonths => "6M",
+            TimeRange::All => "All",
+        }
+    }
+
+    fn from_str(s: &str) -> Self {
+        match s {
+            "1W" => TimeRange::OneWeek,
+            "2W" => TimeRange::TwoWeeks,
+            "1M" => TimeRange::OneMonth,
+            "3M" => TimeRange::ThreeMonths,
+            "6M" => TimeRange::SixMonths,
+            _ => TimeRange::All,
+        }
+    }
 }
 
 #[component]
@@ -53,8 +100,9 @@ pub fn Analytics() -> Element {
     let state = use_context::<Signal<AppState>>();
     let data = state.read();
 
-    let mut active_tab = use_signal(|| AnalyticsTab::Overview);
-    let mut time_range = use_signal(|| TimeRange::All);
+    let saved = settings_store::load_raw();
+    let mut active_tab = use_signal(|| saved.as_ref().map(|s| AnalyticsTab::from_str(&s.analytics_tab)).unwrap_or(AnalyticsTab::Overview));
+    let mut time_range = use_signal(|| saved.as_ref().map(|s| TimeRange::from_str(&s.analytics_range)).unwrap_or(TimeRange::All));
     let mut sym_sort_col = use_signal(|| "pnl".to_string());
     let mut sym_sort_asc = use_signal(|| false);
     let mut prog_sort_col = use_signal(|| "date".to_string());
@@ -95,32 +143,50 @@ pub fn Analytics() -> Element {
                 div { class: "mode-tabs",
                     button {
                         class: if current_tab == AnalyticsTab::Overview { "tab active" } else { "tab" },
-                        onclick: move |_| active_tab.set(AnalyticsTab::Overview),
+                        onclick: move |_| {
+                            active_tab.set(AnalyticsTab::Overview);
+                            settings_store::update(|s| s.analytics_tab = AnalyticsTab::Overview.as_str().to_string());
+                        },
                         "Overview"
                     }
                     button {
                         class: if current_tab == AnalyticsTab::TimeOfDay { "tab active" } else { "tab" },
-                        onclick: move |_| active_tab.set(AnalyticsTab::TimeOfDay),
+                        onclick: move |_| {
+                            active_tab.set(AnalyticsTab::TimeOfDay);
+                            settings_store::update(|s| s.analytics_tab = AnalyticsTab::TimeOfDay.as_str().to_string());
+                        },
                         "Time of Day"
                     }
                     button {
                         class: if current_tab == AnalyticsTab::DayOfWeek { "tab active" } else { "tab" },
-                        onclick: move |_| active_tab.set(AnalyticsTab::DayOfWeek),
+                        onclick: move |_| {
+                            active_tab.set(AnalyticsTab::DayOfWeek);
+                            settings_store::update(|s| s.analytics_tab = AnalyticsTab::DayOfWeek.as_str().to_string());
+                        },
                         "Day of Week"
                     }
                     button {
                         class: if current_tab == AnalyticsTab::Symbols { "tab active" } else { "tab" },
-                        onclick: move |_| active_tab.set(AnalyticsTab::Symbols),
+                        onclick: move |_| {
+                            active_tab.set(AnalyticsTab::Symbols);
+                            settings_store::update(|s| s.analytics_tab = AnalyticsTab::Symbols.as_str().to_string());
+                        },
                         "Symbols"
                     }
                     button {
                         class: if current_tab == AnalyticsTab::TradeQuality { "tab active" } else { "tab" },
-                        onclick: move |_| active_tab.set(AnalyticsTab::TradeQuality),
+                        onclick: move |_| {
+                            active_tab.set(AnalyticsTab::TradeQuality);
+                            settings_store::update(|s| s.analytics_tab = AnalyticsTab::TradeQuality.as_str().to_string());
+                        },
                         "Trade Quality"
                     }
                     button {
                         class: if current_tab == AnalyticsTab::Progression { "tab active" } else { "tab" },
-                        onclick: move |_| active_tab.set(AnalyticsTab::Progression),
+                        onclick: move |_| {
+                            active_tab.set(AnalyticsTab::Progression);
+                            settings_store::update(|s| s.analytics_tab = AnalyticsTab::Progression.as_str().to_string());
+                        },
                         "Progression"
                     }
                 }
@@ -133,7 +199,10 @@ pub fn Analytics() -> Element {
                             rsx! {
                                 button {
                                     class: "{cls}",
-                                    onclick: move |_| time_range.set(r_val),
+                                    onclick: move |_| {
+                                        time_range.set(r_val);
+                                        settings_store::update(|s| s.analytics_range = r_val.as_str().to_string());
+                                    },
                                     "{r_val.label()}"
                                 }
                             }

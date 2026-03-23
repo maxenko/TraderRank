@@ -2,6 +2,7 @@ use dioxus::prelude::*;
 use chrono::Datelike;
 use crate::components::*;
 use crate::state::AppState;
+use crate::settings_store;
 use rust_decimal::Decimal;
 
 #[component]
@@ -9,11 +10,10 @@ pub fn VisualTimeline() -> Element {
     let state = use_context::<Signal<AppState>>();
     let data = state.read();
 
-    // Zoom: 1.0 = fit all, higher = wider (more detail)
-    let mut zoom = use_signal(|| 1.0_f64);
-    // Range selection: start/end as percentage (0.0 - 1.0)
-    let mut range_start = use_signal(|| 0.0_f64);
-    let mut range_end = use_signal(|| 1.0_f64);
+    let saved = settings_store::load_raw();
+    let mut zoom = use_signal(|| saved.as_ref().map(|s| s.vtl_zoom).unwrap_or(1.0));
+    let mut range_start = use_signal(|| saved.as_ref().map(|s| s.vtl_range_start).unwrap_or(0.0));
+    let mut range_end = use_signal(|| saved.as_ref().map(|s| s.vtl_range_end).unwrap_or(1.0));
 
     let total_days = data.daily_summaries.len();
     if total_days == 0 {
@@ -113,7 +113,9 @@ pub fn VisualTimeline() -> Element {
                             class: "zoom-btn",
                             onclick: move |_| {
                                 let cur = *zoom.read();
-                                zoom.set((cur * 0.75).max(0.5));
+                                let new_val = (cur * 0.75).max(0.5);
+                                zoom.set(new_val);
+                                settings_store::update(|s| s.vtl_zoom = new_val);
                             },
                             "\u{2212}"
                         }
@@ -122,7 +124,9 @@ pub fn VisualTimeline() -> Element {
                             class: "zoom-btn",
                             onclick: move |_| {
                                 let cur = *zoom.read();
-                                zoom.set((cur * 1.33).min(5.0));
+                                let new_val = (cur * 1.33).min(5.0);
+                                zoom.set(new_val);
+                                settings_store::update(|s| s.vtl_zoom = new_val);
                             },
                             "+"
                         }
@@ -146,9 +150,13 @@ pub fn VisualTimeline() -> Element {
                             value: "{(rs * slider_max as f64) as i32}",
                             oninput: move |e: Event<FormData>| {
                                 if let Ok(v) = e.value().parse::<f64>() {
-                                    let new_val = (v / slider_max as f64).min(*range_end.read() - 0.05);
-                                    range_start.set(new_val.max(0.0));
+                                    let new_val = (v / slider_max as f64).min(*range_end.read() - 0.05).max(0.0);
+                                    range_start.set(new_val);
                                 }
+                            },
+                            onchange: move |_| {
+                                let val = *range_start.read();
+                                settings_store::update(|s| s.vtl_range_start = val);
                             }
                         }
                         input {
@@ -159,9 +167,13 @@ pub fn VisualTimeline() -> Element {
                             value: "{(re * slider_max as f64) as i32}",
                             oninput: move |e: Event<FormData>| {
                                 if let Ok(v) = e.value().parse::<f64>() {
-                                    let new_val = (v / slider_max as f64).max(*range_start.read() + 0.05);
-                                    range_end.set(new_val.min(1.0));
+                                    let new_val = (v / slider_max as f64).max(*range_start.read() + 0.05).min(1.0);
+                                    range_end.set(new_val);
                                 }
+                            },
+                            onchange: move |_| {
+                                let val = *range_end.read();
+                                settings_store::update(|s| s.vtl_range_end = val);
                             }
                         }
                         // Fill indicator
