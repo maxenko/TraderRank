@@ -159,20 +159,12 @@ fn parse_flex_trades(xml: &str) -> Result<Vec<FlexTrade>> {
             .or_else(|_| parse_attr_decimal(node, "proceeds"))
             .unwrap_or(quantity * price);
 
-        // Parse date
-        let date_str = node.attribute("tradeDate")
-            .or_else(|| node.attribute("reportDate"))
-            .unwrap_or("");
-        let date = NaiveDate::parse_from_str(date_str, "%Y%m%d")
-            .or_else(|_| NaiveDate::parse_from_str(date_str, "%Y-%m-%d"))
-            .with_context(|| format!("Invalid trade date: {}", date_str))?;
-
-        // Parse time (may be absent)
-        let time = node.attribute("tradeTime").and_then(|t| {
-            NaiveTime::parse_from_str(t, "%H%M%S")
-                .or_else(|_| NaiveTime::parse_from_str(t, "%H:%M:%S"))
-                .ok()
-        });
+        // Parse date and time
+        // IB Flex uses multiple formats:
+        //   - Combined: dateTime="YYYYMMDD;HHMMSS" (Activity Statements)
+        //   - Separate: tradeDate="YYYYMMDD" + tradeTime="HHMMSS"
+        //   - orderTime="YYYYMMDD;HHMMSS" as fallback
+        let (date, time) = parse_trade_datetime(&node)?;
 
         trades.push(FlexTrade {
             symbol,
@@ -186,7 +178,50 @@ fn parse_flex_trades(xml: &str) -> Result<Vec<FlexTrade>> {
         });
     }
 
+    // Sort by date+time so FIFO matching works correctly
+    trades.sort_by(|a, b| {
+        let dt_a = NaiveDateTime::new(a.date, a.time.unwrap_or(NaiveTime::from_hms_opt(0, 0, 0).unwrap()));
+        let dt_b = NaiveDateTime::new(b.date, b.time.unwrap_or(NaiveTime::from_hms_opt(0, 0, 0).unwrap()));
+        dt_a.cmp(&dt_b)
+    });
+
     Ok(trades)
+}
+
+/// Parse date and time from an IB Flex XML trade node.
+/// Tries multiple attribute names and formats.
+fn parse_trade_datetime(node: &roxmltree::Node) -> Result<(NaiveDate, Option<NaiveTime>)> {
+    // Try combined dateTime first (most common in Activity Statements): "YYYYMMDD;HHMMSS"
+    if let Some(dt_str) = node.attribute("dateTime").or_else(|| node.attribute("orderTime")) {
+        if let Some((date_part, time_part)) = dt_str.split_once(';') {
+            if let Ok(date) = NaiveDate::parse_from_str(date_part, "%Y%m%d") {
+                let time = NaiveTime::parse_from_str(time_part, "%H%M%S")
+                    .or_else(|_| NaiveTime::parse_from_str(time_part, "%H:%M:%S"))
+                    .ok();
+                return Ok((date, time));
+            }
+        }
+        // Try as date-only
+        if let Ok(date) = NaiveDate::parse_from_str(dt_str, "%Y%m%d") {
+            return Ok((date, None));
+        }
+    }
+
+    // Try separate tradeDate + tradeTime
+    let date_str = node.attribute("tradeDate")
+        .or_else(|| node.attribute("reportDate"))
+        .unwrap_or("");
+    let date = NaiveDate::parse_from_str(date_str, "%Y%m%d")
+        .or_else(|_| NaiveDate::parse_from_str(date_str, "%Y-%m-%d"))
+        .with_context(|| format!("Invalid trade date: '{}' (no dateTime or tradeDate found)", date_str))?;
+
+    let time = node.attribute("tradeTime").and_then(|t| {
+        NaiveTime::parse_from_str(t, "%H%M%S")
+            .or_else(|_| NaiveTime::parse_from_str(t, "%H:%M:%S"))
+            .ok()
+    });
+
+    Ok((date, time))
 }
 
 /// Parse a Decimal from an XML attribute, returning ZERO for empty/missing.
