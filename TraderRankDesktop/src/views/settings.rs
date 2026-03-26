@@ -34,6 +34,7 @@ struct RConfigRow {
 pub fn Settings() -> Element {
     let mut theme = use_context::<Signal<Theme>>();
     let mut state = use_context::<Signal<AppState>>();
+    let mut app_log = use_context::<Signal<Vec<(String, String)>>>();
 
     let current_theme = *theme.read();
 
@@ -48,9 +49,14 @@ pub fn Settings() -> Element {
     let current_sort_col = sort_col.read().clone();
     let current_sort_asc = *sort_asc.read();
 
-    // Build sortable rows
+    // Build sortable rows from filtered weekly data (excludes excluded days)
     let data = state.read();
-    let mut rows: Vec<RConfigRow> = data.weekly_summaries.iter().map(|w| {
+    let filtered_daily: Vec<_> = data.daily_summaries.iter()
+        .filter(|d| !data.is_day_excluded(&d.date.date_naive().to_string()))
+        .cloned()
+        .collect();
+    let filtered_weekly = crate::analytics::TradingAnalytics::calculate_weekly_from_daily(&filtered_daily);
+    let mut rows: Vec<RConfigRow> = filtered_weekly.iter().map(|w| {
         let week_start_date = w.start_date.date_naive();
         let r_val = data.r_value_for_week(week_start_date);
         let r_mult = if r_val != Decimal::ZERO {
@@ -60,7 +66,7 @@ pub fn Settings() -> Element {
         };
         RConfigRow {
             week_start: week_start_date,
-            period: format!("Wk {} ({}/{})", w.week_number, w.start_date.format("%m/%d"), w.end_date.format("%m/%d")),
+            period: format!("Wk {} ({}  -  {})", w.week_number, w.start_date.format("%m/%d"), w.end_date.format("%m/%d")),
             sort_key: w.year as i64 * 100 + w.week_number as i64,
             r_value: r_val,
             week_pnl: w.realized_pnl,
@@ -290,25 +296,20 @@ pub fn Settings() -> Element {
                                 let token = flex_token.read().clone();
                                 let qid = flex_query_id.read().clone();
                                 fetch_status.set(FetchStatus::Fetching);
+                                crate::log_message(&mut app_log, "Fetching trades from IB Flex Web Service...");
                                 spawn(async move {
                                     match crate::flex_fetcher::fetch_and_save(&token, &qid).await {
                                         Ok(count) => {
-                                            // Reload data from all CSV sources
-                                            let mut new_state = crate::data_loader::load_app_state();
-                                            // Preserve user's R-configs
-                                            let old_configs = state.read().r_configs.clone();
-                                            for saved_r in &old_configs {
-                                                if let Some(existing) = new_state.r_configs.iter_mut().find(|c| c.week_start == saved_r.week_start) {
-                                                    existing.r_value = saved_r.r_value;
-                                                }
-                                            }
-                                            state.set(new_state);
-                                            fetch_status.set(FetchStatus::Success(
-                                                format!("Imported {} trades. Data reloaded.", count)
-                                            ));
+                                            crate::log_message(&mut app_log, &format!("Fetched {} trades from IB. Reloading...", count));
+                                            crate::reload_app_state(&mut state);
+                                            let msg = format!("Imported {} trades. Data reloaded.", count);
+                                            crate::log_message(&mut app_log, &msg);
+                                            fetch_status.set(FetchStatus::Success(msg));
                                         }
                                         Err(e) => {
-                                            fetch_status.set(FetchStatus::Error(format!("{}", e)));
+                                            let msg = format!("{}", e);
+                                            crate::log_message(&mut app_log, &format!("ERROR: {}", msg));
+                                            fetch_status.set(FetchStatus::Error(msg));
                                         }
                                     }
                                 });
@@ -334,6 +335,41 @@ pub fn Settings() -> Element {
                 }
                 p { class: "setting-desc muted",
                     "Trades are saved to %LOCALAPPDATA%\\TraderRank\\imports\\. The app will use them on next launch."
+                }
+            }
+
+            // Activity Log
+            div { class: "card",
+                div { class: "log-header",
+                    h3 { class: "card-title", "Activity Log" }
+                    if !app_log.read().is_empty() {
+                        button {
+                            class: "log-clear-btn",
+                            onclick: move |_| {
+                                app_log.write().clear();
+                            },
+                            "Clear"
+                        }
+                    }
+                }
+                div { class: "log-scroll",
+                    if app_log.read().is_empty() {
+                        p { class: "log-empty", "No activity yet." }
+                    }
+                    for (ts, msg) in app_log.read().iter().rev() {
+                        {
+                            let is_error = msg.starts_with("ERROR:");
+                            let line_class = if is_error { "log-line error" } else { "log-line" };
+                            let ts = ts.clone();
+                            let msg = msg.clone();
+                            rsx! {
+                                div { class: "{line_class}",
+                                    span { class: "log-ts", "{ts}" }
+                                    span { class: "log-msg", "{msg}" }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

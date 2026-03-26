@@ -15,7 +15,11 @@ pub fn VisualTimeline() -> Element {
     let mut range_start = use_signal(|| saved.as_ref().map(|s| s.vtl_range_start).unwrap_or(0.0));
     let mut range_end = use_signal(|| saved.as_ref().map(|s| s.vtl_range_end).unwrap_or(1.0));
 
-    let total_days = data.daily_summaries.len();
+    // Filter out excluded days for visual timeline
+    let non_excluded_days: Vec<_> = data.daily_summaries.iter()
+        .filter(|d| !data.is_day_excluded(&d.date.date_naive().to_string()))
+        .collect();
+    let total_days = non_excluded_days.len();
     if total_days == 0 {
         return rsx! {
             div { class: "view", p { "No trading data available." } }
@@ -28,7 +32,7 @@ pub fn VisualTimeline() -> Element {
     let vis_start = (rs * total_days as f64).floor() as usize;
     let vis_end = ((re * total_days as f64).ceil() as usize).min(total_days);
     let vis_end = vis_end.max(vis_start);
-    let visible_days = &data.daily_summaries[vis_start..vis_end];
+    let visible_days = &non_excluded_days[vis_start..vis_end];
     let visible_count = visible_days.len();
 
     // Track width driven by zoom
@@ -51,9 +55,9 @@ pub fn VisualTimeline() -> Element {
         "No data".to_string()
     };
 
-    // Cumulative P&L for the gradient line color
+    // Cumulative P&L for the gradient line color (from filtered list)
     let mut cum_pnl = Decimal::ZERO;
-    for d in &data.daily_summaries[..vis_start] {
+    for d in &non_excluded_days[..vis_start] {
         cum_pnl += d.realized_pnl;
     }
 
@@ -139,7 +143,7 @@ pub fn VisualTimeline() -> Element {
                 div { class: "vtl-range-label", "Time Range" }
                 div { class: "vtl-range-row",
                     span { class: "vtl-range-date",
-                        {data.daily_summaries.first().map(|d| d.date.format("%b %d").to_string()).unwrap_or_default()}
+                        {non_excluded_days.first().map(|d| d.date.format("%b %d").to_string()).unwrap_or_default()}
                     }
                     div { class: "vtl-range-inputs",
                         input {
@@ -183,7 +187,7 @@ pub fn VisualTimeline() -> Element {
                         }
                     }
                     span { class: "vtl-range-date",
-                        {data.daily_summaries.last().map(|d| d.date.format("%b %d").to_string()).unwrap_or_default()}
+                        {non_excluded_days.last().map(|d| d.date.format("%b %d").to_string()).unwrap_or_default()}
                     }
                 }
             }

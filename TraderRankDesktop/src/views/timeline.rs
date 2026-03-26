@@ -68,7 +68,10 @@ pub fn Timeline() -> Element {
     // Build sortable rows with pre-computed R-values
     let mut rows: Vec<SortableRow> = match current_mode {
         TimelineMode::Daily => {
-            data.daily_summaries.iter().map(|d| {
+            // Filter out excluded days
+            data.daily_summaries.iter()
+            .filter(|d| !data.is_day_excluded(&d.date.date_naive().to_string()))
+            .map(|d| {
                 let date_str = d.date.format("%m/%d/%Y").to_string();
                 let week_start = d.date.date_naive();
                 let days_from_mon = d.date.weekday().num_days_from_monday();
@@ -91,9 +94,15 @@ pub fn Timeline() -> Element {
             }).collect()
         }
         TimelineMode::Weekly => {
-            data.weekly_summaries.iter().map(|w| {
+            // Filter excluded days, then recompute weekly summaries
+            let filtered_daily: Vec<_> = data.daily_summaries.iter()
+                .filter(|d| !data.is_day_excluded(&d.date.date_naive().to_string()))
+                .cloned()
+                .collect();
+            let weekly = crate::analytics::TradingAnalytics::calculate_weekly_from_daily(&filtered_daily);
+            weekly.iter().map(|w| {
                 let period = format!(
-                    "Wk {} ({} - {})",
+                    "Wk {} ({}  -  {})",
                     w.week_number,
                     w.start_date.format("%m/%d"),
                     w.end_date.format("%m/%d")
@@ -116,12 +125,17 @@ pub fn Timeline() -> Element {
             }).collect()
         }
         TimelineMode::Monthly => {
-            data.monthly_summaries.iter().filter_map(|m| {
+            // Filter excluded days, then recompute monthly summaries
+            let filtered_daily: Vec<_> = data.daily_summaries.iter()
+                .filter(|d| !data.is_day_excluded(&d.date.date_naive().to_string()))
+                .cloned()
+                .collect();
+            let monthly = crate::analytics::TradingAnalytics::calculate_monthly_from_daily(&filtered_daily);
+            monthly.iter().filter_map(|m| {
                 let period = format!("{} {}", m.month_name, m.year);
                 let Some(first_of_month) = chrono::NaiveDate::from_ymd_opt(m.year, m.month, 1) else {
                     return None;
                 };
-                // Find the Monday of the week containing the 1st (go backwards)
                 let days_from_monday = first_of_month.weekday().num_days_from_monday();
                 let monday_of_first_week = first_of_month - chrono::Duration::days(days_from_monday as i64);
                 let r_val = data.r_value_for_week(monday_of_first_week);
@@ -158,6 +172,8 @@ pub fn Timeline() -> Element {
     });
 
     let total_items = rows.len();
+
+    drop(data);
 
     // Helper closure to build header class
     let header_class = |col: &str| -> &'static str {

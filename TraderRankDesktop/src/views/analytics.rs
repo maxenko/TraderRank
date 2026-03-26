@@ -119,16 +119,20 @@ pub fn Analytics() -> Element {
     let current_tab = *active_tab.read();
     let current_range = *time_range.read();
 
-    // Filter daily summaries by time range
+    // Filter daily summaries by time range and exclusions
     let max_days = current_range.max_days();
-    let total_days = data.daily_summaries.len();
+    let non_excluded_days: Vec<_> = data.daily_summaries.iter()
+        .filter(|d| !data.is_day_excluded(&d.date.date_naive().to_string()))
+        .collect();
+    let total_days = non_excluded_days.len();
     let skip = total_days.saturating_sub(max_days);
-    let filtered_days = &data.daily_summaries[skip..];
+    let filtered_days = &non_excluded_days[skip..];
 
-    // Filter matched trades by the same date cutoff
+    // Filter matched trades by the same date cutoff and exclusions
     let cutoff_date = filtered_days.first().map(|d| d.date);
     let filtered_matched: Vec<_> = data.matched_trades.iter()
         .filter(|mt| cutoff_date.map_or(true, |c| mt.exit_time >= c))
+        .filter(|mt| !data.is_trade_excluded(mt))
         .collect();
 
     let ranges = [
@@ -212,17 +216,89 @@ pub fn Analytics() -> Element {
                 }
             }
 
+            // Recompute symbol stats from filtered matched trades
+            {
+            let mut sym_map: HashMap<String, (Decimal, u32, u32)> = HashMap::new();
+            for mt in filtered_matched.iter() {
+                let entry = sym_map.entry(mt.symbol.clone()).or_insert((Decimal::ZERO, 0, 0));
+                entry.0 += mt.net_pnl;
+                entry.1 += 1;
+                if mt.net_pnl > Decimal::ZERO { entry.2 += 1; }
+            }
+            let filtered_symbol_stats: Vec<crate::state::SymbolStats> = sym_map.into_iter()
+                .map(|(sym, (pnl, trades, wins))| {
+                    let wr = if trades > 0 { (wins as f64 / trades as f64) * 100.0 } else { 0.0 };
+                    crate::state::SymbolStats { symbol: sym, total_pnl: pnl, trade_count: trades, win_rate: wr }
+                })
+                .collect();
+
+            // Recompute hourly stats from filtered daily summaries
+            let mut hourly_map: HashMap<u32, (Decimal, u32, u32, u32)> = HashMap::new();
+            for d in filtered_days.iter() {
+                for ts in d.time_slot_performance.iter() {
+                    let entry = hourly_map.entry(ts.hour).or_insert((Decimal::ZERO, 0, 0, 0));
+                    entry.0 += ts.pnl;
+                    entry.1 += ts.trades;
+                    if ts.pnl > Decimal::ZERO { entry.2 += 1; }
+                    else if ts.pnl < Decimal::ZERO { entry.3 += 1; }
+                }
+            }
+            let mut filtered_hourly_stats: Vec<crate::state::HourlyStats> = hourly_map.into_iter()
+                .map(|(hour, (pnl, trades, wins, losses))| {
+                    let wr = if wins + losses > 0 { (wins as f64 / (wins + losses) as f64) * 100.0 } else { 0.0 };
+                    crate::state::HourlyStats { hour, total_pnl: pnl, trade_count: trades, avg_win_rate: wr }
+                })
+                .collect();
+            filtered_hourly_stats.sort_by_key(|h| h.hour);
+
+            // Recompute monthly summaries from filtered daily data
+            let filtered_monthly = crate::analytics::TradingAnalytics::calculate_monthly_from_daily(
+                &filtered_days.iter().cloned().cloned().collect::<Vec<_>>()
+            );
+
+            // Recompute overview KPIs from filtered data
+            let _f_total_trades: u32 = filtered_days.iter().map(|d| d.total_trades).sum();
+            let f_total_wins: u32 = filtered_days.iter().map(|d| d.winning_trades).sum();
+            let f_total_losses: u32 = filtered_days.iter().map(|d| d.losing_trades).sum();
+            let f_avg_win = if f_total_wins > 0 {
+                let s: Decimal = filtered_days.iter().map(|d| d.avg_win * Decimal::from(d.winning_trades)).sum();
+                s / Decimal::from(f_total_wins)
+            } else { Decimal::ZERO };
+            let f_avg_loss = if f_total_losses > 0 {
+                let s: Decimal = filtered_days.iter().map(|d| d.avg_loss * Decimal::from(d.losing_trades)).sum();
+                s / Decimal::from(f_total_losses)
+            } else { Decimal::ZERO };
+            let f_payoff_ratio = if f_avg_loss != Decimal::ZERO {
+                Some(f_avg_win / f_avg_loss.abs())
+            } else { None };
+
+            // Streaks from filtered data
+            let mut f_current_streak: i32 = 0;
+            let mut f_max_win_streak: u32 = 0;
+            let mut f_max_loss_streak: u32 = 0;
+            let mut cw: u32 = 0;
+            let mut cl: u32 = 0;
+            for d in filtered_days.iter() {
+                if d.realized_pnl > Decimal::ZERO {
+                    cw += 1; cl = 0; f_current_streak = cw as i32;
+                    if cw > f_max_win_streak { f_max_win_streak = cw; }
+                } else if d.realized_pnl < Decimal::ZERO {
+                    cl += 1; cw = 0; f_current_streak = -(cl as i32);
+                    if cl > f_max_loss_streak { f_max_loss_streak = cl; }
+                }
+            }
+
             // Tab content
             match current_tab {
                 AnalyticsTab::Overview => {
                     // ── Overview ──────────────────────────────────────────────
-                    let max_sym_pnl = data.symbol_stats
+                    let max_sym_pnl = filtered_symbol_stats
                         .iter()
                         .map(|s| s.total_pnl.abs())
                         .max()
                         .unwrap_or(Decimal::ONE);
 
-                    let max_hourly_pnl = data.hourly_stats
+                    let max_hourly_pnl = filtered_hourly_stats
                         .iter()
                         .map(|h| h.total_pnl.abs())
                         .max()
@@ -232,25 +308,25 @@ pub fn Analytics() -> Element {
                         div { class: "kpi-grid kpi-grid-4",
                             MetricCard {
                                 label: "Avg Win".to_string(),
-                                value: format_decimal(data.avg_win),
-                                subtitle: Some(format!("Avg Loss: {}", format_decimal(data.avg_loss))),
+                                value: format_decimal(f_avg_win),
+                                subtitle: Some(format!("Avg Loss: {}", format_decimal(f_avg_loss))),
                                 positive: Some(true),
                             }
                             MetricCard {
                                 label: "Payoff Ratio".to_string(),
-                                value: data.payoff_ratio.map(|p| format!("{:.2}:1", p)).unwrap_or("N/A".to_string()),
+                                value: f_payoff_ratio.map(|p| format!("{:.2}:1", p)).unwrap_or("N/A".to_string()),
                                 subtitle: Some("Avg Win / Avg Loss".to_string()),
-                                positive: data.payoff_ratio.map(|p| p > Decimal::ONE),
+                                positive: f_payoff_ratio.map(|p| p > Decimal::ONE),
                             }
                             MetricCard {
                                 label: "Win Streak".to_string(),
-                                value: format!("{} days", data.max_win_streak),
-                                subtitle: Some(format!("Current: {} days", data.current_streak)),
-                                positive: Some(data.current_streak > 0),
+                                value: format!("{} days", f_max_win_streak),
+                                subtitle: Some(format!("Current: {} days", f_current_streak)),
+                                positive: Some(f_current_streak > 0),
                             }
                             MetricCard {
                                 label: "Loss Streak".to_string(),
-                                value: format!("{} days", data.max_loss_streak),
+                                value: format!("{} days", f_max_loss_streak),
                                 subtitle: Some("Max consecutive".to_string()),
                                 positive: Some(false),
                             }
@@ -260,7 +336,7 @@ pub fn Analytics() -> Element {
                         div { class: "card",
                             h3 { class: "card-title", "Symbol Performance" }
                             div { class: "symbol-list",
-                                for sym in data.symbol_stats.iter() {
+                                for sym in filtered_symbol_stats.iter() {
                                     {
                                         let bar_width = (sym.total_pnl.abs() * Decimal::new(100, 0) / max_sym_pnl)
                                             .to_string()
@@ -295,7 +371,7 @@ pub fn Analytics() -> Element {
                         div { class: "card",
                             h3 { class: "card-title", "Performance by Hour" }
                             div { class: "hourly-chart",
-                                for h in data.hourly_stats.iter() {
+                                for h in filtered_hourly_stats.iter() {
                                     {
                                         let bar_height = (h.total_pnl.abs() * Decimal::new(100, 0) / max_hourly_pnl)
                                             .to_string()
@@ -585,7 +661,7 @@ pub fn Analytics() -> Element {
                     let current_sym_col = sym_sort_col.read().clone();
                     let current_sym_asc = *sym_sort_asc.read();
 
-                    let mut sym_rows: Vec<SymRow> = data.symbol_stats
+                    let mut sym_rows: Vec<SymRow> = filtered_symbol_stats
                         .iter()
                         .map(|s| {
                             let avg_pnl = if s.trade_count > 0 { s.total_pnl / Decimal::from(s.trade_count) } else { Decimal::ZERO };
@@ -977,7 +1053,7 @@ pub fn Analytics() -> Element {
                         avg_daily_pnl: Decimal,
                     }
 
-                    let mut month_rows: Vec<MonthRow> = data.monthly_summaries.iter().map(|m| {
+                    let mut month_rows: Vec<MonthRow> = filtered_monthly.iter().map(|m| {
                         MonthRow {
                             sort_key: m.year as i64 * 100 + m.month as i64,
                             period: format!("{} {}", m.month_name, m.year),
@@ -1155,6 +1231,7 @@ pub fn Analytics() -> Element {
                     }
                 }
             }
+            } // end filtered stats block
         }
     }
 }

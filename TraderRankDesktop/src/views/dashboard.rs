@@ -62,11 +62,14 @@ pub fn Dashboard() -> Element {
     });
     let current_range = *chart_range.read();
 
-    // Filter daily summaries by range — this drives EVERYTHING
+    // Filter daily summaries by range, excluding excluded days — this drives EVERYTHING
     let max_days = current_range.max_days();
-    let total_days = data.daily_summaries.len();
+    let all_visible: Vec<_> = data.daily_summaries.iter()
+        .filter(|d| !data.is_day_excluded(&d.date.date_naive().to_string()))
+        .collect();
+    let total_days = all_visible.len();
     let skip = total_days.saturating_sub(max_days);
-    let visible_summaries = &data.daily_summaries[skip..];
+    let visible_summaries = &all_visible[skip..];
 
     // Compute KPIs from filtered data
     let total_pnl: Decimal = visible_summaries.iter().map(|d| d.realized_pnl).sum();
@@ -158,12 +161,9 @@ pub fn Dashboard() -> Element {
         }
     }
 
-    // Chart data from filtered — derive skip from daily_pnls, not daily_summaries
-    let total_chart_days = data.daily_pnls.len();
-    let chart_skip = total_chart_days.saturating_sub(max_days);
-    let visible_pnls: Vec<(&String, &Decimal)> = data.daily_pnls.iter()
-        .skip(chart_skip)
-        .map(|(d, p)| (d, p))
+    // Chart data from visible summaries (already range-filtered and exclusion-filtered)
+    let visible_pnls: Vec<(String, Decimal)> = visible_summaries.iter()
+        .map(|d| (d.date.format("%m/%d").to_string(), d.realized_pnl))
         .collect();
     let max_abs = visible_pnls.iter().fold(Decimal::ZERO, |acc, (_, pnl)| {
         let abs = pnl.abs();
@@ -171,9 +171,12 @@ pub fn Dashboard() -> Element {
     });
     let scale = if max_abs > Decimal::ZERO { max_abs } else { Decimal::ONE };
 
-    // Current week
+    // Current week — recompute from filtered daily summaries
+    let filtered_weekly = crate::analytics::TradingAnalytics::calculate_weekly_from_daily(
+        &all_visible.iter().cloned().cloned().collect::<Vec<_>>()
+    );
     let current_week_r = data.r_configs.last().map(|c| c.r_value).unwrap_or(Decimal::new(100, 0));
-    let current_week_pnl = data.weekly_summaries.last().map(|w| w.realized_pnl).unwrap_or(Decimal::ZERO);
+    let current_week_pnl = filtered_weekly.last().map(|w| w.realized_pnl).unwrap_or(Decimal::ZERO);
     let current_week_r_mult = data.pnl_in_r(current_week_pnl, current_week_r);
 
     let pf_str = profit_factor.map(|p| format!("{:.2}", p)).unwrap_or("N/A".to_string());
@@ -264,9 +267,9 @@ pub fn Dashboard() -> Element {
                             let ratio = rust_decimal::prelude::ToPrimitive::to_f64(&pnl.abs()).unwrap_or(0.0)
                                 / rust_decimal::prelude::ToPrimitive::to_f64(&scale).unwrap_or(1.0);
                             let bar_px = (ratio * max_bar_px).max(4.0);
-                            let is_pos = **pnl >= Decimal::ZERO;
+                            let is_pos = *pnl >= Decimal::ZERO;
                             let bar_class = if is_pos { "bar positive" } else { "bar negative" };
-                            let pnl_label = format_pnl(**pnl);
+                            let pnl_label = format_pnl(*pnl);
                             let tooltip = format!("{}: {}", date, pnl_label);
                             rsx! {
                                 div { class: "equity-bar-col",
@@ -290,7 +293,7 @@ pub fn Dashboard() -> Element {
             // Current Week Summary
             div { class: "card",
                 h3 { class: "card-title", "This Week" }
-                if let Some(week) = data.weekly_summaries.last() {
+                if let Some(week) = filtered_weekly.last() {
                     div { class: "week-summary-grid",
                         div { class: "week-stat",
                             span { class: "stat-label", "P&L" }
