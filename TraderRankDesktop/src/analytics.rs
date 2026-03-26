@@ -18,6 +18,7 @@ impl TradingAnalytics {
         let mut daily_summaries: Vec<DailySummary> = daily_trades
             .into_iter()
             .map(|(_, day_trades)| Self::calculate_daily_summary(day_trades))
+            .filter(|s| s.total_trades > 0) // Drop days with no completed round trips
             .collect();
 
         daily_summaries.sort_by_key(|s| s.date);
@@ -547,6 +548,16 @@ impl TradingAnalytics {
         // Sort by week start date
         weekly_summaries.sort_by_key(|w| w.start_date);
         weekly_summaries
+    }
+
+    /// Public: recompute weekly summaries from a (possibly filtered) set of daily summaries
+    pub fn calculate_weekly_from_daily(daily_summaries: &[DailySummary]) -> Vec<WeeklySummary> {
+        Self::calculate_weekly_summaries(daily_summaries)
+    }
+
+    /// Public: recompute monthly summaries from a (possibly filtered) set of daily summaries
+    pub fn calculate_monthly_from_daily(daily_summaries: &[DailySummary]) -> Vec<MonthlySummary> {
+        Self::calculate_monthly_summaries(daily_summaries)
     }
 
     /// Regenerate monthly summaries from daily summaries (for backward compatibility with cached data)
