@@ -253,39 +253,76 @@ fn imports_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// Write trades as CSV in the standard format our parser reads:
-/// Symbol,Side,Quantity,Fill Price,Time,Net Amount,Commission
+/// Format a FlexTrade as a CSV line.
+fn trade_to_csv_line(t: &FlexTrade, index: usize) -> String {
+    let time = if let Some(tm) = t.time {
+        NaiveDateTime::new(t.date, tm)
+    } else {
+        let secs = (index as u32 / 1000) % 30;
+        let millis = index as u32 % 1000;
+        let tm = NaiveTime::from_hms_milli_opt(9, 30 + secs, 0, millis).unwrap();
+        NaiveDateTime::new(t.date, tm)
+    };
+    let dt: DateTime<Utc> = DateTime::from_naive_utc_and_offset(time, Utc);
+
+    format!(
+        "{},{},{},{},{},{},{}",
+        t.symbol,
+        t.side,
+        t.quantity,
+        t.price,
+        dt.format("%Y-%m-%d %H:%M:%S"),
+        t.net_amount,
+        t.commission,
+    )
+}
+
+/// Write trades as CSV, merging with any existing data to avoid losing
+/// previously fetched trades. Deduplicates by the full CSV line.
 fn write_trades_csv(path: &PathBuf, trades: &[FlexTrade]) -> Result<()> {
-    let mut lines = Vec::with_capacity(trades.len() + 1);
-    lines.push("Symbol,Side,Qty,Fill Price,Time,Net Amount,Commission".to_string());
+    use std::collections::HashSet;
 
-    for (i, t) in trades.iter().enumerate() {
-        let time = if let Some(tm) = t.time {
-            NaiveDateTime::new(t.date, tm)
-        } else {
-            // Assign synthetic time preserving order
-            let secs = (i as u32 / 1000) % 30;
-            let millis = i as u32 % 1000;
-            let tm = NaiveTime::from_hms_milli_opt(9, 30 + secs, 0, millis).unwrap();
-            NaiveDateTime::new(t.date, tm)
-        };
-        let dt: DateTime<Utc> = DateTime::from_naive_utc_and_offset(time, Utc);
-
-        lines.push(format!(
-            "{},{},{},{},{},{},{}",
-            t.symbol,
-            t.side,
-            t.quantity,
-            t.price,
-            dt.format("%Y-%m-%d %H:%M:%S"),
-            t.net_amount,
-            t.commission,
-        ));
+    // Read existing lines (skip header) if the file already exists
+    let mut existing_lines: HashSet<String> = HashSet::new();
+    if path.exists() {
+        if let Ok(contents) = std::fs::read_to_string(path) {
+            for line in contents.lines().skip(1) {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    existing_lines.insert(trimmed.to_string());
+                }
+            }
+        }
     }
 
-    std::fs::write(path, lines.join("\n"))
+    let existing_count = existing_lines.len();
+
+    // Add new trades, deduplicating
+    let mut new_count = 0usize;
+    for (i, t) in trades.iter().enumerate() {
+        let line = trade_to_csv_line(t, i);
+        if existing_lines.insert(line) {
+            new_count += 1;
+        }
+    }
+
+    // Write all lines sorted by the time column (5th field) for consistency
+    let mut all_lines: Vec<String> = existing_lines.into_iter().collect();
+    all_lines.sort_by(|a, b| {
+        let time_a = a.split(',').nth(4).unwrap_or("");
+        let time_b = b.split(',').nth(4).unwrap_or("");
+        time_a.cmp(time_b)
+    });
+
+    let mut output = Vec::with_capacity(all_lines.len() + 1);
+    output.push("Symbol,Side,Qty,Fill Price,Time,Net Amount,Commission".to_string());
+    output.extend(all_lines);
+
+    std::fs::write(path, output.join("\n"))
         .with_context(|| format!("Failed to write CSV to {:?}", path))?;
 
-    eprintln!("Saved {} trades to {:?}", trades.len(), path);
+    let total = output.len() - 1; // minus header
+    eprintln!("Saved {} trades to {:?} ({} new, {} previously existed)",
+        total, path, new_count, existing_count);
     Ok(())
 }
