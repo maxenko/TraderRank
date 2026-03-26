@@ -1,49 +1,12 @@
-use crate::models::{MatchedTrade, ProcessedData, Trade, TradingSummary};
+use crate::models::{MatchedTrade, Trade, TradingSummary};
 use crate::parser::CsvParser;
 use crate::state::{AppState, WeeklyRConfig, SymbolStats, HourlyStats};
-use anyhow::{Context, Result};
 use chrono::Datelike;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-
-/// Find the Data directory — same logic as CLI:
-/// project parent / Data (i.e. D:\GitHub\TraderRank\Data)
-fn find_data_dir() -> Option<PathBuf> {
-    // Try relative to executable first
-    if let Ok(exe_dir) = std::env::current_exe() {
-        if let Some(parent) = exe_dir.parent() {
-            // From target/debug/ -> go up to TraderRankDesktop, then up to TraderRank
-            let candidates = [
-                parent.join("../../Data"),       // target/debug -> TraderRankDesktop -> TraderRank
-                parent.join("../../../Data"),     // deeper nesting
-                parent.join("Data"),              // next to executable
-            ];
-            for c in &candidates {
-                if c.exists() {
-                    return Some(c.canonicalize().unwrap_or_else(|_| c.to_path_buf()));
-                }
-            }
-        }
-    }
-
-    // Try relative to current working directory
-    if let Ok(cwd) = std::env::current_dir() {
-        let candidates = [
-            cwd.join("../Data"),          // TraderRankDesktop -> TraderRank/Data
-            cwd.join("Data"),             // cwd is TraderRank
-            cwd.join("../../Data"),       // nested deeper
-        ];
-        for c in &candidates {
-            if c.exists() {
-                return Some(c.canonicalize().unwrap_or_else(|_| c.to_path_buf()));
-            }
-        }
-    }
-
-    None
-}
+use crate::settings_store;
 
 /// Collect CSV files from a directory, if it exists.
 fn collect_csv_files(dir: &PathBuf) -> Vec<PathBuf> {
@@ -68,34 +31,20 @@ fn collect_csv_files(dir: &PathBuf) -> Vec<PathBuf> {
     }
 }
 
-/// Parse all CSV files from Data/Source/ and %LOCALAPPDATA%\TraderRank\imports\,
-/// returning deduplicated trades from both locations.
-fn load_trades_from_csv() -> Vec<Trade> {
-    let mut csv_files: Vec<PathBuf> = Vec::new();
+/// Load trades from %LOCALAPPDATA%\TraderRank\imports\ (IB Flex imports).
+fn load_trades_from_imports() -> Vec<Trade> {
+    let Some(imports) = crate::app_dirs::imports_dir() else {
+        eprintln!("Could not determine imports directory.");
+        return Vec::new();
+    };
 
-    // Source 1: project-relative Data/Source/ (manually placed CSVs)
-    if let Some(data_dir) = find_data_dir() {
-        let source = data_dir.join("Source");
-        let found = collect_csv_files(&source);
-        if !found.is_empty() {
-            eprintln!("Found {} CSV files in {:?}", found.len(), source);
-        }
-        csv_files.extend(found);
-    }
-
-    // Source 2: user data dir (IB Flex imports)
-    if let Some(imports) = crate::app_dirs::imports_dir() {
-        let found = collect_csv_files(&imports);
-        if !found.is_empty() {
-            eprintln!("Found {} CSV files in {:?}", found.len(), imports);
-        }
-        csv_files.extend(found);
-    }
-
+    let csv_files = collect_csv_files(&imports);
     if csv_files.is_empty() {
-        eprintln!("No CSV files found in Data/Source/ or user imports directory.");
+        eprintln!("No CSV files in {:?}. Use the refresh button or Settings to fetch trades from IB.", imports);
         return Vec::new();
     }
+
+    eprintln!("Found {} CSV files in {:?}", csv_files.len(), imports);
 
     let mut all_trades: HashSet<Trade> = HashSet::new();
     let mut total_parsed = 0usize;
@@ -125,27 +74,6 @@ fn load_trades_from_csv() -> Vec<Trade> {
         trades.len(), csv_files.len(), total_parsed);
 
     trades
-}
-
-/// Load cached analysis from Data/processed_data.json
-pub fn load_processed_data() -> Result<Option<ProcessedData>> {
-    let data_dir = match find_data_dir() {
-        Some(d) => d,
-        None => return Ok(None),
-    };
-
-    let json_path = data_dir.join("processed_data.json");
-    if !json_path.exists() {
-        return Ok(None);
-    }
-
-    let json_str = std::fs::read_to_string(&json_path)
-        .with_context(|| format!("Failed to read {:?}", json_path))?;
-
-    let data: ProcessedData = serde_json::from_str(&json_str)
-        .with_context(|| "Failed to deserialize processed_data.json")?;
-
-    Ok(Some(data))
 }
 
 /// Convert CLI's TradingSummary into the desktop's AppState.
@@ -365,6 +293,10 @@ pub fn trading_summary_to_app_state(summary: TradingSummary, matched_trades: &[M
         })
         .collect();
 
+    let exclusions = settings_store::load_raw()
+        .map(|s| s.exclusions)
+        .unwrap_or_default();
+
     AppState {
         daily_summaries,
         weekly_summaries,
@@ -392,14 +324,13 @@ pub fn trading_summary_to_app_state(summary: TradingSummary, matched_trades: &[M
         hourly_stats,
         daily_pnls,
         r_configs,
+        exclusions,
     }
 }
 
-/// Try to load real data, fall back to sample data.
-/// Priority: parse raw CSVs with our own analytics engine > cached JSON > sample data
+/// Load trade data from IB Flex imports, fall back to sample data.
 pub fn load_app_state() -> AppState {
-    // First try: parse raw CSV files and run analytics independently
-    let trades = load_trades_from_csv();
+    let trades = load_trades_from_imports();
     if !trades.is_empty() {
         eprintln!("Processing {} trades through analytics engine...", trades.len());
         let summary = crate::analytics::TradingAnalytics::analyze_trades(&trades);
@@ -411,20 +342,6 @@ pub fn load_app_state() -> AppState {
         return state;
     }
 
-    // Fallback: load cached processed_data.json from CLI
-    match load_processed_data() {
-        Ok(Some(data)) => {
-            eprintln!("No CSV source files found. Loaded {} trading days from cached processed_data.json",
-                data.summary.daily_summaries.len());
-            trading_summary_to_app_state(data.summary, &[])
-        }
-        Ok(None) => {
-            eprintln!("No data found — using sample data. Place CSV files in Data/Source/.");
-            crate::sample_data::generate_sample_data()
-        }
-        Err(e) => {
-            eprintln!("Error loading data: {} — falling back to sample data", e);
-            crate::sample_data::generate_sample_data()
-        }
-    }
+    eprintln!("No trade data found. Use the refresh button to fetch trades from IB.");
+    crate::sample_data::generate_sample_data()
 }
