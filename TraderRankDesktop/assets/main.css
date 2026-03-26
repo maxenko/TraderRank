@@ -189,6 +189,39 @@ body {
 .nav-right {
     margin-left: auto;
     flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.refresh-btn {
+    background: var(--bg-input);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    padding: 8px 14px;
+    font-size: 16px;
+    cursor: pointer;
+    transition: all 0.25s ease;
+    color: var(--text-primary);
+}
+
+.refresh-btn:hover {
+    border-color: var(--accent-primary);
+    box-shadow: var(--shadow-glow);
+}
+
+.refresh-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
+.refresh-btn.fetching {
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
 }
 
 .theme-toggle {
@@ -708,6 +741,22 @@ body {
     display: flex;
     flex-direction: column;
     gap: 4px;
+}
+
+.hide-excluded-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-muted);
+    cursor: pointer;
+    user-select: none;
+    margin-top: 4px;
+}
+
+.hide-excluded-toggle input[type="checkbox"] {
+    cursor: pointer;
+    accent-color: var(--accent-primary);
 }
 
 /* ===== Analytics — Symbol Breakdown ===== */
@@ -1365,10 +1414,169 @@ th.sorted { color: var(--accent-primary); }
     color: var(--text-secondary);
 }
 
+/* ===== Activity Log ===== */
+.log-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+}
+
+.log-header .card-title {
+    margin-bottom: 0;
+}
+
+.log-clear-btn {
+    padding: 4px 12px;
+    font-size: 11px;
+    color: var(--text-muted);
+    background: var(--bg-input);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.log-clear-btn:hover {
+    color: var(--text-primary);
+    border-color: var(--accent-primary);
+}
+
+.log-scroll {
+    max-height: 200px;
+    overflow-y: auto;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    padding: 8px 12px;
+    font-family: monospace;
+    font-size: 12px;
+}
+
+.log-empty {
+    color: var(--text-muted);
+    font-style: italic;
+    font-family: inherit;
+}
+
+.log-line {
+    display: flex;
+    gap: 10px;
+    padding: 3px 0;
+    border-bottom: 1px solid var(--border-color);
+    line-height: 1.4;
+}
+
+.log-line:last-child {
+    border-bottom: none;
+}
+
+.log-ts {
+    color: var(--text-muted);
+    flex-shrink: 0;
+    font-size: 11px;
+}
+
+.log-msg {
+    color: var(--text-primary);
+    word-break: break-word;
+}
+
+.log-line.error .log-msg {
+    color: var(--accent-red);
+}
+
 /* ===== Sortable Table Headers ===== */
 th.sortable { cursor: pointer; user-select: none; }
 th.sortable:hover { color: var(--text-primary); }
 th.sorted { color: var(--accent-primary); }
+
+/* ===== Exclusion UI ===== */
+
+/* Excluded row — dimmed */
+.excluded-row {
+    opacity: 0.35;
+}
+.excluded-row:hover {
+    opacity: 0.55;
+}
+
+/* Excl column header */
+.excl-header {
+    width: 120px;
+    min-width: 100px;
+    text-align: center;
+}
+
+/* Excl cell */
+.excl-cell {
+    width: 120px;
+    min-width: 100px;
+    vertical-align: top;
+}
+
+.excl-day-wrap,
+.excl-trade-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    align-items: flex-start;
+}
+
+.excl-label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: var(--text-muted);
+    cursor: pointer;
+    user-select: none;
+}
+
+.excl-label input[type="checkbox"] {
+    cursor: pointer;
+    accent-color: var(--accent-primary);
+}
+
+.excl-trade-wrap input[type="checkbox"] {
+    cursor: pointer;
+    accent-color: var(--accent-primary);
+}
+
+.excl-reason-input {
+    width: 100%;
+    max-width: 140px;
+    padding: 3px 6px;
+    font-size: 11px;
+    color: var(--text-primary);
+    background: var(--bg-input);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    font-family: inherit;
+    transition: border-color 0.2s ease;
+}
+
+.excl-reason-input::placeholder {
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+.excl-reason-input:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 2px var(--accent-primary-glow);
+}
+
+/* Day separator excluded state */
+.trade-table tr.day-separator.excluded-row,
+.trade-table tr.day-separator.excluded-row:nth-child(odd),
+.trade-table tr.day-separator.excluded-row:nth-child(even),
+.trade-table tr.day-separator.excluded-row:hover {
+    opacity: 0.35;
+}
+.trade-table tr.day-separator.excluded-row:hover {
+    opacity: 0.55;
+}
 
 /* ===== Responsive ===== */
 @media (max-width: 900px) {
