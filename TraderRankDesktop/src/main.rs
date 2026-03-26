@@ -57,6 +57,8 @@ fn App() -> Element {
 
     let _theme = use_context_provider(|| Signal::new(initial_theme));
 
+    let _log = use_context_provider(|| Signal::new(Vec::<(String, String)>::new())); // (timestamp, message)
+
     let _state = use_context_provider(|| {
         let mut app_state = data_loader::load_app_state();
         // Apply saved R-configs if available
@@ -103,6 +105,7 @@ fn AppLayout() -> Element {
                     Link { class: "nav-tab", to: Route::Settings {}, "Settings" }
                 }
                 div { class: "nav-right",
+                    RefreshButton {}
                     ThemeToggle {}
                 }
             }
@@ -135,6 +138,103 @@ fn ThemeToggle() -> Element {
                 settings_store::save_settings(&new_theme, &s.r_configs);
             },
             "{icon}"
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum RefreshState {
+    Idle,
+    Fetching,
+    Done,
+    Error,
+}
+
+/// Helper: reload AppState preserving user R-configs
+fn reload_app_state(state: &mut Signal<state::AppState>) {
+    let mut new_state = data_loader::load_app_state();
+    let old_configs = state.read().r_configs.clone();
+    for saved_r in &old_configs {
+        if let Some(existing) = new_state.r_configs.iter_mut().find(|c| c.week_start == saved_r.week_start) {
+            existing.r_value = saved_r.r_value;
+        }
+    }
+    state.set(new_state);
+}
+
+/// Push a timestamped message to the app log (visible in Settings)
+pub fn log_message(log: &mut Signal<Vec<(String, String)>>, msg: &str) {
+    let ts = chrono::Local::now().format("%H:%M:%S").to_string();
+    eprintln!("[{}] {}", ts, msg);
+    log.write().push((ts, msg.to_string()));
+    // Keep last 100 entries
+    let len = log.read().len();
+    if len > 100 {
+        log.write().drain(..len - 100);
+    }
+}
+
+#[component]
+fn RefreshButton() -> Element {
+    let mut state = use_context::<Signal<state::AppState>>();
+    let mut app_log = use_context::<Signal<Vec<(String, String)>>>();
+    let mut status = use_signal(|| RefreshState::Idle);
+    let current = *status.read();
+
+    let label = match current {
+        RefreshState::Idle => "\u{21BB}",      // ↻
+        RefreshState::Fetching => "\u{23F3}",  // ⏳
+        RefreshState::Done => "\u{2705}",      // ✅
+        RefreshState::Error => "\u{274C}",     // ❌
+    };
+
+    let btn_class = match current {
+        RefreshState::Fetching => "refresh-btn fetching",
+        _ => "refresh-btn",
+    };
+
+    rsx! {
+        button {
+            class: "{btn_class}",
+            title: "Refresh trades from broker",
+            disabled: current == RefreshState::Fetching,
+            onclick: move |_| {
+                let saved = settings_store::load_raw();
+                let token = saved.as_ref().map(|s| s.flex_token.clone()).unwrap_or_default();
+                let qid = saved.as_ref().map(|s| s.flex_query_id.clone()).unwrap_or_default();
+
+                if token.is_empty() || qid.is_empty() {
+                    log_message(&mut app_log, "Reloading local trade data...");
+                    reload_app_state(&mut state);
+                    log_message(&mut app_log, "Data reloaded from local imports.");
+                    status.set(RefreshState::Done);
+                    spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        status.set(RefreshState::Idle);
+                    });
+                    return;
+                }
+
+                log_message(&mut app_log, "Fetching trades from IB Flex Web Service...");
+                status.set(RefreshState::Fetching);
+                spawn(async move {
+                    match flex_fetcher::fetch_and_save(&token, &qid).await {
+                        Ok(count) => {
+                            log_message(&mut app_log, &format!("Fetched {} trades from IB. Reloading...", count));
+                            reload_app_state(&mut state);
+                            log_message(&mut app_log, "Data reloaded successfully.");
+                            status.set(RefreshState::Done);
+                        }
+                        Err(e) => {
+                            log_message(&mut app_log, &format!("ERROR: {}", e));
+                            status.set(RefreshState::Error);
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    status.set(RefreshState::Idle);
+                });
+            },
+            "{label}"
         }
     }
 }
