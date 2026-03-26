@@ -429,6 +429,7 @@ pub struct TradingSummary {
 }
 
 /// Matches the CLI's ProcessedData for loading cached analysis
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessedData {
     pub last_processed: DateTime<Utc>,

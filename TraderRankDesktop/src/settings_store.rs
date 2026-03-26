@@ -3,6 +3,7 @@ use crate::theme::Theme;
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// All persisted UI state — the entire app session
@@ -57,6 +58,11 @@ pub struct PersistedSettings {
     pub flex_token: String,
     #[serde(default)]
     pub flex_query_id: String,
+
+    // Exclusions: key -> reason (optional)
+    // Keys: "day:YYYY-MM-DD" for day exclusions, "trade:SYMBOL:EXIT_TIME_RFC3339" for trade exclusions
+    #[serde(default)]
+    pub exclusions: HashMap<String, String>,
 }
 
 fn default_dashboard_range() -> String { "1M".to_string() }

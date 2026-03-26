@@ -1,6 +1,7 @@
 use crate::models::*;
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct WeeklyRConfig {
@@ -62,6 +63,9 @@ pub struct AppState {
 
     // R-unit config
     pub r_configs: Vec<WeeklyRConfig>,
+
+    // Exclusions: key -> reason
+    pub exclusions: HashMap<String, String>,
 }
 
 impl AppState {
@@ -79,5 +83,44 @@ impl AppState {
         } else {
             pnl / r_value
         }
+    }
+
+    /// Generate exclusion key for a day (date_str = "YYYY-MM-DD")
+    pub fn day_exclusion_key(date_str: &str) -> String {
+        format!("day:{}", date_str)
+    }
+
+    /// Generate exclusion key for a matched trade
+    pub fn trade_exclusion_key(mt: &MatchedTrade) -> String {
+        format!("trade:{}:{}", mt.symbol, mt.exit_time.format("%Y-%m-%dT%H:%M:%S"))
+    }
+
+    /// Check if a day is excluded
+    pub fn is_day_excluded(&self, date_str: &str) -> bool {
+        self.exclusions.contains_key(&Self::day_exclusion_key(date_str))
+    }
+
+    /// Check if a matched trade is excluded (directly or via its day)
+    pub fn is_trade_excluded(&self, mt: &MatchedTrade) -> bool {
+        let day_str = mt.exit_time.date_naive().to_string();
+        self.exclusions.contains_key(&Self::trade_exclusion_key(mt))
+            || self.is_day_excluded(&day_str)
+    }
+
+    /// Get the exclusion reason for a day
+    pub fn day_exclusion_reason(&self, date_str: &str) -> String {
+        self.exclusions
+            .get(&Self::day_exclusion_key(date_str))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Get the exclusion reason for a matched trade
+    #[allow(dead_code)]
+    pub fn trade_exclusion_reason(&self, mt: &MatchedTrade) -> String {
+        self.exclusions
+            .get(&Self::trade_exclusion_key(mt))
+            .cloned()
+            .unwrap_or_default()
     }
 }

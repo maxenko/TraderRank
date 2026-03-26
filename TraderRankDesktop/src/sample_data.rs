@@ -433,6 +433,7 @@ pub fn generate_sample_data() -> AppState {
         hourly_stats,
         daily_pnls,
         r_configs,
+        exclusions: std::collections::HashMap::new(),
     }
 }
 
