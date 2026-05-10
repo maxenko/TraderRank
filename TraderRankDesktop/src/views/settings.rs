@@ -1,7 +1,7 @@
 use dioxus::prelude::*;
 use chrono::NaiveDate;
 use crate::theme::Theme;
-use crate::state::AppState;
+use crate::state::{AppState, StatsConfig};
 use crate::settings_store;
 use rust_decimal::Decimal;
 
@@ -35,6 +35,8 @@ pub fn Settings() -> Element {
     let mut theme = use_context::<Signal<Theme>>();
     let mut state = use_context::<Signal<AppState>>();
     let mut app_log = use_context::<Signal<Vec<(String, String)>>>();
+    let mut stats_config = use_context::<Signal<StatsConfig>>();
+    let count_commissions = stats_config.read().count_commissions;
 
     let current_theme = *theme.read();
 
@@ -48,6 +50,18 @@ pub fn Settings() -> Element {
 
     let current_sort_col = sort_col.read().clone();
     let current_sort_asc = *sort_asc.read();
+
+    // Default R value input — seeded from AppState (which loaded from settings)
+    let initial_default_r = state.read().default_r_value;
+    let mut default_r_input = use_signal(|| {
+        let s = initial_default_r.to_string();
+        // Trim trailing zeros for nicer display ("100" not "100.00")
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    });
+
+    // Max hold days input — seeded from AppState
+    let initial_max_hold = state.read().max_hold_days;
+    let mut max_hold_input = use_signal(|| initial_max_hold.to_string());
 
     // Build sortable rows from filtered weekly data (excludes excluded days)
     let data = state.read();
@@ -89,6 +103,73 @@ pub fn Settings() -> Element {
 
     rsx! {
         div { class: "view settings-view",
+            // Stats accounting — affects EVERYTHING in the app instantly
+            div { class: "card",
+                div { class: "setting-row",
+                    div { class: "setting-stack",
+                        span { class: "setting-label", "Include Commissions in Stats" }
+                        span { class: "setting-hint",
+                            if count_commissions {
+                                "ON — all P&L, R-multiples, and W/L classifications are NET (after broker fees)."
+                            } else {
+                                "OFF — stats use GROSS P&L. Useful for evaluating raw strategy edge separate from execution costs."
+                            }
+                        }
+                    }
+                    div { class: "toggle-group",
+                        button {
+                            class: if count_commissions { "toggle-btn active" } else { "toggle-btn" },
+                            onclick: move |_| {
+                                stats_config.write().count_commissions = true;
+                                settings_store::update(|s| s.count_commissions = true);
+                            },
+                            "Net (count)"
+                        }
+                        button {
+                            class: if !count_commissions { "toggle-btn active" } else { "toggle-btn" },
+                            onclick: move |_| {
+                                stats_config.write().count_commissions = false;
+                                settings_store::update(|s| s.count_commissions = false);
+                            },
+                            "Gross (ignore)"
+                        }
+                    }
+                }
+            }
+
+            // Day-trader filter — drop multi-day round trips from stats
+            div { class: "card",
+                div { class: "setting-row",
+                    div { class: "setting-stack",
+                        span { class: "setting-label", "Day Trader Filter — Max Hold (days)" }
+                        span { class: "setting-hint",
+                            "Round-trip trades held longer than this are dropped from all stats. "
+                            "Catches pre-existing positions whose CLOSE landed in the dataset (e.g. selling a long-term hold) — "
+                            "those would otherwise be matched against unrelated later trades as phantom shorts. "
+                            "Default 2 days. Changes apply on next data load (Refresh)."
+                        }
+                    }
+                    div { class: "max-hold-wrap",
+                        input {
+                            class: "max-hold-input",
+                            r#type: "number",
+                            min: "0",
+                            step: "1",
+                            value: "{max_hold_input}",
+                            oninput: move |e| max_hold_input.set(e.value()),
+                            onchange: move |_| {
+                                let raw = max_hold_input.read().clone();
+                                if let Ok(parsed) = raw.parse::<u32>() {
+                                    settings_store::update(|s| s.max_hold_days = parsed);
+                                    crate::reload_app_state(&mut state);
+                                }
+                            },
+                        }
+                        span { class: "max-hold-suffix", "days" }
+                    }
+                }
+            }
+
             // Theme — compact single-row card
             div { class: "card",
                 div { class: "setting-row",
@@ -116,9 +197,32 @@ pub fn Settings() -> Element {
 
             // R-Unit Configuration
             div { class: "card",
-                h3 { class: "card-title", "Risk Unit (R) Configuration" }
+                div { class: "rconfig-header",
+                    h3 { class: "card-title", "Risk Unit (R) Configuration" }
+                    div { class: "rconfig-default-wrap",
+                        label { class: "rconfig-default-label", r#for: "default-r-input", "Default R for new weeks: $" }
+                        input {
+                            id: "default-r-input",
+                            class: "rconfig-default-input",
+                            r#type: "number",
+                            min: "0.01",
+                            step: "1",
+                            value: "{default_r_input}",
+                            oninput: move |e| default_r_input.set(e.value()),
+                            onchange: move |_| {
+                                let raw = default_r_input.read().clone();
+                                if let Ok(parsed) = raw.parse::<Decimal>() {
+                                    if parsed > Decimal::ZERO {
+                                        state.write().default_r_value = parsed;
+                                        settings_store::update(|s| s.default_r_value = parsed.to_string());
+                                    }
+                                }
+                            },
+                        }
+                    }
+                }
                 p { class: "setting-desc",
-                    "Set the dollar value of 1R for each week. P&L will be displayed in R-multiples throughout the app."
+                    "Set the dollar value of 1R for each week. P&L will be displayed in R-multiples throughout the app. New weeks roll in using the default value above."
                 }
                 div { class: "r-config-table-wrap",
                     table { class: "r-config-table",
