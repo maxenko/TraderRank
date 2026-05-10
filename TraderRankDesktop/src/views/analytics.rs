@@ -1,7 +1,7 @@
 use dioxus::prelude::*;
 use chrono::Datelike;
 use crate::components::*;
-use crate::state::AppState;
+use crate::state::{AppState, TradeOutcome};
 use crate::settings_store;
 use rust_decimal::Decimal;
 use std::collections::HashMap;
@@ -98,6 +98,8 @@ impl TimeRange {
 #[component]
 pub fn Analytics() -> Element {
     let state = use_context::<Signal<AppState>>();
+    let stats_config = use_context::<Signal<crate::state::StatsConfig>>();
+    let count_commissions = stats_config.read().count_commissions;
     let data = state.read();
 
     let saved = settings_store::load_raw();
@@ -218,16 +220,21 @@ pub fn Analytics() -> Element {
 
             // Recompute symbol stats from filtered matched trades
             {
-            let mut sym_map: HashMap<String, (Decimal, u32, u32)> = HashMap::new();
+            // sym_map: symbol -> (pnl, total_trades, wins, losses)
+            let mut sym_map: HashMap<String, (Decimal, u32, u32, u32)> = HashMap::new();
             for mt in filtered_matched.iter() {
-                let entry = sym_map.entry(mt.symbol.clone()).or_insert((Decimal::ZERO, 0, 0));
-                entry.0 += mt.net_pnl;
+                let entry = sym_map.entry(mt.symbol.clone()).or_insert((Decimal::ZERO, 0, 0, 0));
+                entry.0 += data.trade_pnl(mt, count_commissions);
                 entry.1 += 1;
-                if mt.net_pnl > Decimal::ZERO { entry.2 += 1; }
+                match data.trade_outcome_with(mt, count_commissions) {
+                    TradeOutcome::Winner => entry.2 += 1,
+                    TradeOutcome::Loser => entry.3 += 1,
+                    TradeOutcome::Lossless => {}
+                }
             }
             let filtered_symbol_stats: Vec<crate::state::SymbolStats> = sym_map.into_iter()
-                .map(|(sym, (pnl, trades, wins))| {
-                    let wr = if trades > 0 { (wins as f64 / trades as f64) * 100.0 } else { 0.0 };
+                .map(|(sym, (pnl, trades, wins, losses))| {
+                    let wr = if wins + losses > 0 { (wins as f64 / (wins + losses) as f64) * 100.0 } else { 0.0 };
                     crate::state::SymbolStats { symbol: sym, total_pnl: pnl, trade_count: trades, win_rate: wr }
                 })
                 .collect();
@@ -257,16 +264,21 @@ pub fn Analytics() -> Element {
             );
 
             // Recompute overview KPIs from filtered data
-            let _f_total_trades: u32 = filtered_days.iter().map(|d| d.total_trades).sum();
-            let f_total_wins: u32 = filtered_days.iter().map(|d| d.winning_trades).sum();
-            let f_total_losses: u32 = filtered_days.iter().map(|d| d.losing_trades).sum();
-            let f_avg_win = if f_total_wins > 0 {
-                let s: Decimal = filtered_days.iter().map(|d| d.avg_win * Decimal::from(d.winning_trades)).sum();
-                s / Decimal::from(f_total_wins)
+            // Classify from matched trades using R threshold
+            let _f_total_wins: u32 = filtered_matched.iter().filter(|t| data.trade_outcome_with(t, count_commissions) == TradeOutcome::Winner).count() as u32;
+            let _f_total_lossless: u32 = filtered_matched.iter().filter(|t| data.trade_outcome_with(t, count_commissions) == TradeOutcome::Lossless).count() as u32;
+            let _f_total_losses: u32 = filtered_matched.iter().filter(|t| data.trade_outcome_with(t, count_commissions) == TradeOutcome::Loser).count() as u32;
+            let winning_pnls: Vec<Decimal> = filtered_matched.iter()
+                .filter(|t| data.trade_outcome_with(t, count_commissions) == TradeOutcome::Winner)
+                .map(|t| data.trade_pnl(t, count_commissions)).collect();
+            let losing_pnls: Vec<Decimal> = filtered_matched.iter()
+                .filter(|t| data.trade_outcome_with(t, count_commissions) == TradeOutcome::Loser)
+                .map(|t| data.trade_pnl(t, count_commissions)).collect();
+            let f_avg_win = if !winning_pnls.is_empty() {
+                winning_pnls.iter().sum::<Decimal>() / Decimal::from(winning_pnls.len() as u32)
             } else { Decimal::ZERO };
-            let f_avg_loss = if f_total_losses > 0 {
-                let s: Decimal = filtered_days.iter().map(|d| d.avg_loss * Decimal::from(d.losing_trades)).sum();
-                s / Decimal::from(f_total_losses)
+            let f_avg_loss = if !losing_pnls.is_empty() {
+                losing_pnls.iter().sum::<Decimal>() / Decimal::from(losing_pnls.len() as u32)
             } else { Decimal::ZERO };
             let f_payoff_ratio = if f_avg_loss != Decimal::ZERO {
                 Some(f_avg_win / f_avg_loss.abs())
@@ -279,10 +291,11 @@ pub fn Analytics() -> Element {
             let mut cw: u32 = 0;
             let mut cl: u32 = 0;
             for d in filtered_days.iter() {
-                if d.realized_pnl > Decimal::ZERO {
+                let day_pnl = data.daily_pnl(d, count_commissions);
+                if day_pnl > Decimal::ZERO {
                     cw += 1; cl = 0; f_current_streak = cw as i32;
                     if cw > f_max_win_streak { f_max_win_streak = cw; }
-                } else if d.realized_pnl < Decimal::ZERO {
+                } else if day_pnl < Decimal::ZERO {
                     cl += 1; cw = 0; f_current_streak = -(cl as i32);
                     if cl > f_max_loss_streak { f_max_loss_streak = cl; }
                 }
@@ -515,16 +528,26 @@ pub fn Analytics() -> Element {
 
                 AnalyticsTab::DayOfWeek => {
                     // ── Day of Week ──────────────────────────────────────────
-                    // Group daily summaries by weekday
-                    // (trading_days, total_trades, wins, pnl)
-                    let mut dow_map: HashMap<u32, (u32, u32, u32, Decimal)> = HashMap::new();
+                    // Group matched trades by weekday, classify with R threshold
+                    // dow_map: weekday -> (trading_days, total_trades, wins, losses, pnl)
+                    let mut dow_map: HashMap<u32, (u32, u32, u32, u32, Decimal)> = HashMap::new();
+                    // Count trading days per weekday from daily summaries
                     for d in filtered_days.iter() {
-                        let wd = d.date.weekday().num_days_from_monday(); // 0=Mon, 4=Fri
-                        let entry = dow_map.entry(wd).or_insert((0, 0, 0, Decimal::ZERO));
-                        entry.0 += 1; // trading days
+                        let wd = d.date.weekday().num_days_from_monday();
+                        let entry = dow_map.entry(wd).or_insert((0, 0, 0, 0, Decimal::ZERO));
+                        entry.0 += 1;
                         entry.1 += d.total_trades;
-                        entry.2 += d.winning_trades;
-                        entry.3 += d.realized_pnl;
+                        entry.4 += data.daily_pnl(d, count_commissions);
+                    }
+                    // Count wins/losses from matched trades using R classification
+                    for mt in filtered_matched.iter() {
+                        let wd = mt.exit_time.weekday().num_days_from_monday();
+                        let entry = dow_map.entry(wd).or_insert((0, 0, 0, 0, Decimal::ZERO));
+                        match data.trade_outcome_with(mt, count_commissions) {
+                            TradeOutcome::Winner => entry.2 += 1,
+                            TradeOutcome::Loser => entry.3 += 1,
+                            TradeOutcome::Lossless => {}
+                        }
                     }
 
                     let day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
@@ -541,8 +564,8 @@ pub fn Analytics() -> Element {
 
                     let mut dow_rows: Vec<DowRow> = (0u32..5)
                         .map(|wd| {
-                            let (days, trades, wins, pnl) = dow_map.get(&wd).copied().unwrap_or((0, 0, 0, Decimal::ZERO));
-                            let win_rate = if trades > 0 { (wins as f64 / trades as f64) * 100.0 } else { 0.0 };
+                            let (days, trades, wins, losses, pnl) = dow_map.get(&wd).copied().unwrap_or((0, 0, 0, 0, Decimal::ZERO));
+                            let win_rate = if wins + losses > 0 { (wins as f64 / (wins + losses) as f64) * 100.0 } else { 0.0 };
                             let avg_daily_pnl = if days > 0 { pnl / Decimal::from(days) } else { Decimal::ZERO };
                             DowRow {
                                 day_name: day_names[wd as usize],
@@ -841,11 +864,14 @@ pub fn Analytics() -> Element {
 
                     let format_duration = |secs: i64| -> String {
                         if secs <= 0 { return "N/A".to_string(); }
-                        let hours = secs / 3600;
+                        let days = secs / 86400;
+                        let hours = (secs % 86400) / 3600;
                         let mins = (secs % 3600) / 60;
                         let s = secs % 60;
-                        if hours > 0 {
-                            format!("{}h {}m {}s", hours, mins, s)
+                        if days > 0 {
+                            format!("{}d {}h", days, hours)
+                        } else if hours > 0 {
+                            format!("{}h {}m", hours, mins)
                         } else if mins > 0 {
                             format!("{}m {}s", mins, s)
                         } else {
@@ -878,13 +904,14 @@ pub fn Analytics() -> Element {
                     let pos50 = Decimal::new(50, 0);
 
                     for mt in filtered_matched.iter() {
-                        let idx = if mt.net_pnl < neg50 { 0 }
-                            else if mt.net_pnl < Decimal::ZERO { 1 }
-                            else if mt.net_pnl < pos50 { 2 }
+                        let pnl = data.trade_pnl(mt, count_commissions);
+                        let idx = if pnl < neg50 { 0 }
+                            else if pnl < Decimal::ZERO { 1 }
+                            else if pnl < pos50 { 2 }
                             else { 3 };
                         buckets[idx].count += 1;
-                        buckets[idx].total_pnl += mt.net_pnl;
-                        if mt.net_pnl >= Decimal::ZERO {
+                        buckets[idx].total_pnl += pnl;
+                        if data.trade_outcome_with(mt, count_commissions) == TradeOutcome::Winner {
                             buckets[idx].wins += 1;
                         }
                     }
@@ -998,22 +1025,37 @@ pub fn Analytics() -> Element {
                     }
 
                     let mut progression_rows: Vec<ProgressionRow> = Vec::new();
-                    let mut cum_trades: u32 = 0;
                     let mut cum_wins: u32 = 0;
+                    let mut cum_losses: u32 = 0;
                     let summaries = filtered_days;
 
+                    // Pre-compute per-day W/L from matched trades using R classification
+                    let mut day_wl: Vec<(u32, u32)> = Vec::new(); // (wins, losses) per day
+                    for d in summaries.iter() {
+                        let day_str = d.date.date_naive().to_string();
+                        let dw: u32 = filtered_matched.iter()
+                            .filter(|mt| mt.exit_time.date_naive().to_string() == day_str)
+                            .filter(|mt| data.trade_outcome_with(mt, count_commissions) == TradeOutcome::Winner)
+                            .count() as u32;
+                        let dl: u32 = filtered_matched.iter()
+                            .filter(|mt| mt.exit_time.date_naive().to_string() == day_str)
+                            .filter(|mt| data.trade_outcome_with(mt, count_commissions) == TradeOutcome::Loser)
+                            .count() as u32;
+                        day_wl.push((dw, dl));
+                    }
+
                     for (i, d) in summaries.iter().enumerate() {
-                        cum_trades += d.total_trades;
-                        cum_wins += d.winning_trades;
-                        let cumulative_wr = if cum_trades > 0 {
-                            (cum_wins as f64 / cum_trades as f64) * 100.0
+                        let (dw, dl) = day_wl[i];
+                        cum_wins += dw;
+                        cum_losses += dl;
+                        let cumulative_wr = if cum_wins + cum_losses > 0 {
+                            (cum_wins as f64 / (cum_wins + cum_losses) as f64) * 100.0
                         } else { 0.0 };
                         let window_start = if i >= 10 { i - 9 } else { 0 };
-                        let window = &summaries[window_start..=i];
-                        let window_trades: u32 = window.iter().map(|dd| dd.total_trades).sum();
-                        let window_wins: u32 = window.iter().map(|dd| dd.winning_trades).sum();
-                        let rolling_wr = if window_trades > 0 {
-                            (window_wins as f64 / window_trades as f64) * 100.0
+                        let window_wins: u32 = day_wl[window_start..=i].iter().map(|(w, _)| w).sum();
+                        let window_losses: u32 = day_wl[window_start..=i].iter().map(|(_, l)| l).sum();
+                        let rolling_wr = if window_wins + window_losses > 0 {
+                            (window_wins as f64 / (window_wins + window_losses) as f64) * 100.0
                         } else { 0.0 };
                         progression_rows.push(ProgressionRow {
                             sort_date: d.date.date_naive(),
@@ -1054,12 +1096,22 @@ pub fn Analytics() -> Element {
                     }
 
                     let mut month_rows: Vec<MonthRow> = filtered_monthly.iter().map(|m| {
+                        // Recompute win rate from matched trades using R classification
+                        let mw: u32 = filtered_matched.iter()
+                            .filter(|mt| mt.exit_time.year() == m.year && mt.exit_time.month() == m.month)
+                            .filter(|mt| data.trade_outcome_with(mt, count_commissions) == TradeOutcome::Winner)
+                            .count() as u32;
+                        let ml: u32 = filtered_matched.iter()
+                            .filter(|mt| mt.exit_time.year() == m.year && mt.exit_time.month() == m.month)
+                            .filter(|mt| data.trade_outcome_with(mt, count_commissions) == TradeOutcome::Loser)
+                            .count() as u32;
+                        let wr = if mw + ml > 0 { (mw as f64 / (mw + ml) as f64) * 100.0 } else { 0.0 };
                         MonthRow {
                             sort_key: m.year as i64 * 100 + m.month as i64,
                             period: format!("{} {}", m.month_name, m.year),
                             trades: m.total_trades,
                             pnl: m.realized_pnl,
-                            win_rate: m.win_rate,
+                            win_rate: wr,
                             trading_days: m.trading_days,
                             avg_daily_pnl: m.avg_daily_pnl,
                         }
