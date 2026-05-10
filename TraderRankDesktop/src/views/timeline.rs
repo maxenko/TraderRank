@@ -30,10 +30,43 @@ impl TimelineMode {
     }
 }
 
+/// Map a chrono Weekday to (3-letter label, css variant suffix, sort key 0..6).
+/// Sat/Sun are mapped but should never appear in trading data.
+fn weekday_badge(wd: chrono::Weekday) -> (&'static str, &'static str, i32) {
+    match wd {
+        chrono::Weekday::Mon => ("Mon", "mon", 0),
+        chrono::Weekday::Tue => ("Tue", "tue", 1),
+        chrono::Weekday::Wed => ("Wed", "wed", 2),
+        chrono::Weekday::Thu => ("Thu", "thu", 3),
+        chrono::Weekday::Fri => ("Fri", "fri", 4),
+        chrono::Weekday::Sat => ("Sat", "sat", 5),
+        chrono::Weekday::Sun => ("Sun", "sun", 6),
+    }
+}
+
+/// 3-letter month abbreviation for monthly badge.
+fn month_abbrev(month: u32) -> &'static str {
+    match month {
+        1 => "Jan", 2 => "Feb", 3 => "Mar", 4 => "Apr",
+        5 => "May", 6 => "Jun", 7 => "Jul", 8 => "Aug",
+        9 => "Sep", 10 => "Oct", 11 => "Nov", 12 => "Dec",
+        _ => "—",
+    }
+}
+
 /// A flattened row used for sorting across all three modes.
 #[derive(Clone)]
 #[allow(dead_code)]
 struct SortableRow {
+    /// 3-letter badge label: "Mon".."Fri" for daily, "Mon" (week start) for weekly,
+    /// 3-letter month abbrev ("Jan".."Dec") for monthly.
+    badge_label: String,
+    /// Badge variant CSS class suffix: "mon", "tue", "wed", "thu", "fri", "week", "month".
+    badge_variant: &'static str,
+    /// Sort key for the badge column. For daily/weekly: weekday num (Mon=0..Fri=4).
+    /// For monthly: month number 1..12. Sorts in natural calendar order.
+    badge_sort_key: i32,
+
     /// Display label for the Period column.
     period: String,
     /// Sortable date key — used as default sort and tiebreaker
@@ -53,6 +86,8 @@ struct SortableRow {
 #[component]
 pub fn Timeline() -> Element {
     let state = use_context::<Signal<AppState>>();
+    let stats_config = use_context::<Signal<crate::state::StatsConfig>>();
+    let count_commissions = stats_config.read().count_commissions;
     let data = state.read();
 
     let saved = settings_store::load_raw();
@@ -77,27 +112,39 @@ pub fn Timeline() -> Element {
                 let days_from_mon = d.date.weekday().num_days_from_monday();
                 let monday = week_start - chrono::Duration::days(days_from_mon as i64);
                 let r_val = data.r_value_for_week(monday);
-                let r_mult = data.pnl_in_r(d.realized_pnl, r_val);
+                let effective_pnl = data.daily_pnl(d, count_commissions);
+                let r_mult = data.pnl_in_r(effective_pnl, r_val);
+                let wd = d.date.weekday();
+                let (badge_label, badge_variant, badge_sort_key) = weekday_badge(wd);
                 SortableRow {
+                    badge_label: badge_label.to_string(),
+                    badge_variant,
+                    badge_sort_key,
                     period: date_str,
                     sort_date: d.date.date_naive(),
                     sort_period_num: d.date.date_naive().ordinal() as i64 + d.date.year() as i64 * 1000,
-                    realized_pnl: d.realized_pnl,
+                    realized_pnl: effective_pnl,
                     r_mult,
                     win_rate: d.win_rate,
                     total_trades: d.total_trades,
                     winning_trades: d.winning_trades,
                     losing_trades: d.losing_trades,
                     total_commission: d.total_commission,
-                    is_positive: d.realized_pnl >= Decimal::ZERO,
+                    is_positive: effective_pnl >= Decimal::ZERO,
                 }
             }).collect()
         }
         TimelineMode::Weekly => {
-            // Filter excluded days, then recompute weekly summaries
+            // Filter excluded days, then recompute weekly summaries.
+            // Override realized_pnl with the toggle-aware value so weekly
+            // aggregates honor the count_commissions setting.
             let filtered_daily: Vec<_> = data.daily_summaries.iter()
                 .filter(|d| !data.is_day_excluded(&d.date.date_naive().to_string()))
-                .cloned()
+                .map(|d| {
+                    let mut cloned = d.clone();
+                    cloned.realized_pnl = data.daily_pnl(d, count_commissions);
+                    cloned
+                })
                 .collect();
             let weekly = crate::analytics::TradingAnalytics::calculate_weekly_from_daily(&filtered_daily);
             weekly.iter().map(|w| {
@@ -109,7 +156,13 @@ pub fn Timeline() -> Element {
                 );
                 let r_val = data.r_value_for_week(w.start_date.date_naive());
                 let r_mult = data.pnl_in_r(w.realized_pnl, r_val);
+                let badge_label = "Mon".to_string();
+                let badge_variant = "week";
+                let badge_sort_key = 0;
                 SortableRow {
+                    badge_label,
+                    badge_variant,
+                    badge_sort_key,
                     period,
                     sort_date: w.start_date.date_naive(),
                     sort_period_num: w.year as i64 * 100 + w.week_number as i64,
@@ -125,10 +178,16 @@ pub fn Timeline() -> Element {
             }).collect()
         }
         TimelineMode::Monthly => {
-            // Filter excluded days, then recompute monthly summaries
+            // Filter excluded days, then recompute monthly summaries.
+            // Override realized_pnl with the toggle-aware value so monthly
+            // aggregates honor the count_commissions setting.
             let filtered_daily: Vec<_> = data.daily_summaries.iter()
                 .filter(|d| !data.is_day_excluded(&d.date.date_naive().to_string()))
-                .cloned()
+                .map(|d| {
+                    let mut cloned = d.clone();
+                    cloned.realized_pnl = data.daily_pnl(d, count_commissions);
+                    cloned
+                })
                 .collect();
             let monthly = crate::analytics::TradingAnalytics::calculate_monthly_from_daily(&filtered_daily);
             monthly.iter().filter_map(|m| {
@@ -140,7 +199,13 @@ pub fn Timeline() -> Element {
                 let monday_of_first_week = first_of_month - chrono::Duration::days(days_from_monday as i64);
                 let r_val = data.r_value_for_week(monday_of_first_week);
                 let r_mult = data.pnl_in_r(m.realized_pnl, r_val);
+                let badge_label = month_abbrev(m.month).to_string();
+                let badge_variant = "month";
+                let badge_sort_key = m.month as i32;
                 Some(SortableRow {
+                    badge_label,
+                    badge_variant,
+                    badge_sort_key,
                     period,
                     sort_date: first_of_month,
                     sort_period_num: m.year as i64 * 100 + m.month as i64,
@@ -160,6 +225,8 @@ pub fn Timeline() -> Element {
     // Sort the full list before pagination
     rows.sort_by(|a, b| {
         let ordering = match current_sort_col.as_str() {
+            "dow" => a.badge_sort_key.cmp(&b.badge_sort_key)
+                .then_with(|| a.sort_date.cmp(&b.sort_date)),
             "pnl" => a.realized_pnl.cmp(&b.realized_pnl),
             "r" => a.r_mult.cmp(&b.r_mult),
             "win" => a.win_rate.partial_cmp(&b.win_rate).unwrap_or(std::cmp::Ordering::Equal),
@@ -256,6 +323,24 @@ pub fn Timeline() -> Element {
                 table { class: "timeline-table",
                     thead {
                         tr {
+                            th {
+                                class: header_class("dow"),
+                                style: "width: 70px;",
+                                onclick: move |_| {
+                                    let col = sort_col.read().clone();
+                                    if col == "dow" {
+                                        let cur = *sort_asc.read();
+                                        sort_asc.set(!cur);
+                                    } else {
+                                        sort_col.set("dow".to_string());
+                                        sort_asc.set(true);
+                                    }
+                                    let sc = sort_col.read().clone();
+                                    let sa = *sort_asc.read();
+                                    settings_store::update(|s| { s.timeline_sort_col = sc; s.timeline_sort_asc = sa; });
+                                },
+                                "Day{sort_indicator(\"dow\")}"
+                            }
                             th {
                                 class: header_class("period"),
                                 onclick: move |_| {
@@ -382,6 +467,8 @@ pub fn Timeline() -> Element {
                             {
                                 let row_class = if row.is_positive { "timeline-row positive" } else { "timeline-row negative" };
                                 let period = row.period.clone();
+                                let badge_label = row.badge_label.clone();
+                                let badge_class = format!("dow-badge dow-{}", row.badge_variant);
                                 let pnl = format_pnl(row.realized_pnl);
                                 let r = format_r(row.r_mult);
                                 let win = format!("{:.1}%", row.win_rate);
@@ -390,6 +477,9 @@ pub fn Timeline() -> Element {
                                 let comm = format_decimal(row.total_commission);
                                 rsx! {
                                     tr { class: "{row_class}",
+                                        td { class: "dow-cell",
+                                            span { class: "{badge_class}", "{badge_label}" }
+                                        }
                                         td { "{period}" }
                                         td { class: "pnl", "{pnl}" }
                                         td { class: "r-value", "{r}" }
