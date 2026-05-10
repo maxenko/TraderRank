@@ -24,3 +24,6 @@ target
 # Project Specific
 
 Data
+.claude/settings.local.json
+.claude/settings.local.json
+TraderRank/.claude/settings.local.json
