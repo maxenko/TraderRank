@@ -4,3 +4,6 @@ pub mod visual_timeline;
 pub mod trades;
 pub mod analytics;
 pub mod settings;
+pub mod trends;
+pub mod best_worst;
+pub mod week;

@@ -28,6 +28,8 @@ enum Route {
     Timeline {},
     #[route("/visual")]
     VisualTimeline {},
+    #[route("/week")]
+    Week {},
     #[route("/trades")]
     Trades {},
     #[route("/analytics")]
@@ -54,6 +56,12 @@ fn main() {
 fn App() -> Element {
     let saved = settings_store::load_settings();
     let initial_theme = saved.as_ref().map(|(t, _)| *t).unwrap_or(Theme::Dark);
+
+    // Stats config (commission toggle) — read from persisted settings, defaults to "count"
+    let initial_stats = settings_store::load_raw()
+        .map(|s| state::StatsConfig { count_commissions: s.count_commissions })
+        .unwrap_or_default();
+    let _stats_config = use_context_provider(|| Signal::new(initial_stats));
 
     let _theme = use_context_provider(|| Signal::new(initial_theme));
 
@@ -100,6 +108,7 @@ fn AppLayout() -> Element {
                     Link { class: "nav-tab", to: Route::Dashboard {}, "Dashboard" }
                     Link { class: "nav-tab", to: Route::Timeline {}, "Timeline" }
                     Link { class: "nav-tab", to: Route::VisualTimeline {}, "Visual" }
+                    Link { class: "nav-tab", to: Route::Week {}, "Week" }
                     Link { class: "nav-tab", to: Route::Trades {}, "Trades" }
                     Link { class: "nav-tab", to: Route::Analytics {}, "Analytics" }
                     Link { class: "nav-tab", to: Route::Settings {}, "Settings" }
@@ -151,7 +160,7 @@ enum RefreshState {
 }
 
 /// Helper: reload AppState preserving user R-configs
-fn reload_app_state(state: &mut Signal<state::AppState>) {
+pub fn reload_app_state(state: &mut Signal<state::AppState>) {
     let mut new_state = data_loader::load_app_state();
     let old_configs = state.read().r_configs.clone();
     for saved_r in &old_configs {
@@ -188,14 +197,14 @@ fn RefreshButton() -> Element {
         RefreshState::Error => "\u{274C}",     // ❌
     };
 
-    let btn_class = match current {
-        RefreshState::Fetching => "refresh-btn fetching",
-        _ => "refresh-btn",
+    let icon_class = match current {
+        RefreshState::Fetching => "refresh-icon spinning",
+        _ => "refresh-icon",
     };
 
     rsx! {
         button {
-            class: "{btn_class}",
+            class: "refresh-btn",
             title: "Refresh trades from broker",
             disabled: current == RefreshState::Fetching,
             onclick: move |_| {
@@ -234,7 +243,7 @@ fn RefreshButton() -> Element {
                     status.set(RefreshState::Idle);
                 });
             },
-            "{label}"
+            span { class: "{icon_class}", "{label}" }
         }
     }
 }
@@ -253,6 +262,11 @@ fn Timeline() -> Element {
 #[component]
 fn VisualTimeline() -> Element {
     rsx! { views::visual_timeline::VisualTimeline {} }
+}
+
+#[component]
+fn Week() -> Element {
+    rsx! { views::week::Week {} }
 }
 
 #[component]
