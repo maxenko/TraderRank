@@ -8,6 +8,8 @@ use rust_decimal::Decimal;
 #[component]
 pub fn VisualTimeline() -> Element {
     let state = use_context::<Signal<AppState>>();
+    let stats_config = use_context::<Signal<crate::state::StatsConfig>>();
+    let count_commissions = stats_config.read().count_commissions;
     let data = state.read();
 
     let saved = settings_store::load_raw();
@@ -43,7 +45,7 @@ pub fn VisualTimeline() -> Element {
     // Max absolute P&L for sizing dots
     let max_pnl = visible_days
         .iter()
-        .map(|d| rust_decimal::prelude::ToPrimitive::to_f64(&d.realized_pnl.abs()).unwrap_or(0.0))
+        .map(|d| rust_decimal::prelude::ToPrimitive::to_f64(&data.daily_pnl(d, count_commissions).abs()).unwrap_or(0.0))
         .fold(1.0_f64, f64::max);
 
     // Date range label
@@ -58,7 +60,7 @@ pub fn VisualTimeline() -> Element {
     // Cumulative P&L for the gradient line color (from filtered list)
     let mut cum_pnl = Decimal::ZERO;
     for d in &non_excluded_days[..vis_start] {
-        cum_pnl += d.realized_pnl;
+        cum_pnl += data.daily_pnl(d, count_commissions);
     }
 
     // Build node data
@@ -76,23 +78,24 @@ pub fn VisualTimeline() -> Element {
     let nodes: Vec<NodeData> = visible_days
         .iter()
         .map(|d| {
-            cum_pnl += d.realized_pnl;
-            let pnl_f = rust_decimal::prelude::ToPrimitive::to_f64(&d.realized_pnl.abs()).unwrap_or(0.0);
+            let effective_pnl = data.daily_pnl(d, count_commissions);
+            cum_pnl += effective_pnl;
+            let pnl_f = rust_decimal::prelude::ToPrimitive::to_f64(&effective_pnl.abs()).unwrap_or(0.0);
             let dot_size = 10.0 + (pnl_f / max_pnl) * 16.0;
 
             // R-value lookup
             let days_from_mon = d.date.weekday().num_days_from_monday();
             let monday = d.date.date_naive() - chrono::Duration::days(days_from_mon as i64);
             let r_val = data.r_value_for_week(monday);
-            let r_mult = data.pnl_in_r(d.realized_pnl, r_val);
+            let r_mult = data.pnl_in_r(effective_pnl, r_val);
 
             NodeData {
                 date: d.date.format("%b %d").to_string(),
-                pnl_str: format_pnl(d.realized_pnl),
+                pnl_str: format_pnl(effective_pnl),
                 r_str: format_r(r_mult),
                 win_rate: d.win_rate,
                 trades: d.total_trades,
-                is_positive: d.realized_pnl >= Decimal::ZERO,
+                is_positive: effective_pnl >= Decimal::ZERO,
                 dot_size,
                 cum_pnl_str: format_pnl(cum_pnl),
             }
