@@ -1,24 +1,54 @@
-use crate::models::{Trade, Side, DailySummary, WeeklySummary, MonthlySummary, TradingSummary, TimeSlotPerformance};
-use chrono::{DateTime, Utc, Datelike, Weekday};
+use crate::models::{Trade, Side, MatchedTrade, DailySummary, WeeklySummary, MonthlySummary, TradingSummary, TimeSlotPerformance};
+use chrono::{DateTime, NaiveDate, Utc, Datelike, Weekday};
 use rust_decimal::Decimal;
 use std::collections::{HashMap, HashSet};
 
 pub struct TradingAnalytics;
 
 impl TradingAnalytics {
-    pub fn analyze_trades(trades: &[Trade]) -> TradingSummary {
-        let mut daily_trades: HashMap<String, Vec<Trade>> = HashMap::new();
-
-        // Group trades by date
-        for trade in trades {
-            let date_key = format!("{}", trade.time.date_naive());
-            daily_trades.entry(date_key).or_insert_with(Vec::new).push(trade.clone());
+    /// Primary entry point: takes raw trades AND the already-matched round trips.
+    /// DailySummary is built by grouping matched trades by `exit_time.date_naive()`,
+    /// so overnight/multi-day round trips correctly land on their close day.
+    /// Raw trades are still needed for `total_volume` and `time_slot_performance`.
+    pub fn analyze_trades_with_matched(
+        trades: &[Trade],
+        matched: &[MatchedTrade],
+    ) -> TradingSummary {
+        // 1. Group matched trades by exit-day (the day P&L is realized)
+        let mut by_exit_day: HashMap<NaiveDate, Vec<&MatchedTrade>> = HashMap::new();
+        for mt in matched {
+            by_exit_day
+                .entry(mt.exit_time.date_naive())
+                .or_default()
+                .push(mt);
         }
 
-        let mut daily_summaries: Vec<DailySummary> = daily_trades
+        // 2. Group raw trades by day for total_volume + hourly performance
+        let mut raw_by_day: HashMap<NaiveDate, Vec<Trade>> = HashMap::new();
+        for t in trades {
+            raw_by_day
+                .entry(t.time.date_naive())
+                .or_default()
+                .push(t.clone());
+        }
+
+        // 3. Union of all days that have either a close or any fill
+        let all_days: HashSet<NaiveDate> = by_exit_day
+            .keys()
+            .copied()
+            .chain(raw_by_day.keys().copied())
+            .collect();
+
+        let mut daily_summaries: Vec<DailySummary> = all_days
             .into_iter()
-            .map(|(_, day_trades)| Self::calculate_daily_summary(day_trades))
-            .filter(|s| s.total_trades > 0) // Drop days with no completed round trips
+            .map(|day| {
+                Self::build_daily_summary(
+                    day,
+                    by_exit_day.get(&day).map(|v| v.as_slice()).unwrap_or(&[]),
+                    raw_by_day.get(&day).map(|v| v.as_slice()).unwrap_or(&[]),
+                )
+            })
+            .filter(|s| s.total_trades > 0) // drop days with no closes
             .collect();
 
         daily_summaries.sort_by_key(|s| s.date);
@@ -95,218 +125,78 @@ impl TradingAnalytics {
         }
     }
 
-    fn calculate_daily_summary(mut trades: Vec<Trade>) -> DailySummary {
-        debug_assert!(!trades.is_empty(), "calculate_daily_summary called with empty trades");
-        trades.sort_by_key(|t| t.time);
-
-        let date = trades.first().unwrap().time.date_naive().and_hms_opt(0, 0, 0).unwrap();
-        let date_utc = DateTime::<Utc>::from_naive_utc_and_offset(date, Utc);
+    /// Build a single day's summary by aggregating the matched trades that
+    /// closed on that day (`closes`) and the raw fills that occurred on that
+    /// day (`raw`, used only for total_volume + hourly bars).
+    fn build_daily_summary(
+        day: NaiveDate,
+        closes: &[&MatchedTrade],
+        raw: &[Trade],
+    ) -> DailySummary {
+        let date_utc = DateTime::<Utc>::from_naive_utc_and_offset(
+            day.and_hms_opt(0, 0, 0).unwrap(),
+            Utc,
+        );
         let mut summary = DailySummary::new(date_utc);
 
-        // Keep a copy for hourly performance calculation
-        let all_trades = trades.clone();
+        // Volume = notional of every fill that touched this day. (Entry side of
+        // an overnight trade may live on a different day; for "how active was
+        // this day" we count all fills.)
+        summary.total_volume = raw
+            .iter()
+            .map(|t| t.quantity * t.fill_price)
+            .sum();
 
-        // Group trades by symbol first
-        let mut trades_by_symbol: HashMap<String, Vec<Trade>> = HashMap::new();
-        for trade in trades {
-            trades_by_symbol.entry(trade.symbol.clone())
-                .or_insert_with(Vec::new)
-                .push(trade);
-        }
+        // Realized P&L, wins, losses, commission — straight aggregation of closes.
+        let mut symbols_set: HashSet<String> = HashSet::new();
+        let mut winning_pnls: Vec<Decimal> = Vec::new();
+        let mut losing_pnls: Vec<Decimal> = Vec::new();
 
-        let mut realized_trades = Vec::new();
-        let mut symbols_set = HashSet::new();
-        let mut total_commission = Decimal::ZERO;
-        let mut total_volume = Decimal::ZERO;
+        for mt in closes {
+            symbols_set.insert(mt.symbol.clone());
+            summary.total_commission += mt.commission;
 
-        // Process each symbol's trades using chronological position tracking
-        // Supports both long (Buy->Sell) and short (Sell->Buy) day trades
-        for (symbol, mut symbol_trades) in trades_by_symbol {
-            // Calculate total volume for all trades (matched or not)
-            for trade in &symbol_trades {
-                total_volume += trade.quantity * trade.fill_price;
-            }
-
-            // Skip symbols with only one trade
-            if symbol_trades.len() < 2 {
-                let trade = &symbol_trades[0];
-                eprintln!("Warning: Unmatched trade for {}: {} {} shares at ${}",
-                    symbol,
-                    match trade.side {
-                        Side::Buy => "Buy",
-                        Side::Sell => "Sell",
-                    },
-                    trade.quantity,
-                    trade.fill_price
-                );
-                continue;
-            }
-
-            // Sort trades by time for chronological processing
-            symbol_trades.sort_by_key(|t| t.time);
-
-            // Track position and cost basis for intraday trades
-            // position > 0 = long, position < 0 = short, position == 0 = flat
-            let mut position = Decimal::ZERO;
-            let mut cost_basis = Decimal::ZERO;
-            let mut opening_commission = Decimal::ZERO;
-            let mut symbol_had_trades = false;
-
-            for trade in &symbol_trades {
-                match trade.side {
-                    Side::Buy => {
-                        if position < Decimal::ZERO {
-                            // Closing short position (buying to cover)
-                            let abs_pos = position.abs();
-                            let qty_to_close = trade.quantity.min(abs_pos);
-                            if qty_to_close > Decimal::ZERO {
-                                // Short P&L = (entry_price - exit_price) * qty = (cost_basis - buy_price) * qty
-                                let trade_pnl = (cost_basis - trade.fill_price) * qty_to_close;
-                                let trade_commission = opening_commission * qty_to_close / abs_pos
-                                    + trade.commission * qty_to_close / trade.quantity;
-                                realized_trades.push(trade_pnl);
-                                total_commission += trade_commission;
-                                symbol_had_trades = true;
-                            }
-
-                            // Update opening commission proportionally
-                            let remaining_ratio = (abs_pos - qty_to_close) / abs_pos;
-                            opening_commission = opening_commission * remaining_ratio;
-                            position += qty_to_close; // position moves toward zero
-
-                            let qty_remaining = trade.quantity - qty_to_close;
-                            if qty_remaining > Decimal::ZERO {
-                                // Bought more than needed to close short -- open a new long
-                                position = qty_remaining;
-                                cost_basis = trade.fill_price;
-                                opening_commission = trade.commission * qty_remaining / trade.quantity;
-                            } else if position == Decimal::ZERO {
-                                cost_basis = Decimal::ZERO;
-                                opening_commission = Decimal::ZERO;
-                            }
-                        } else if position > Decimal::ZERO {
-                            // Adding to existing long position
-                            let total_cost = cost_basis * position + trade.fill_price * trade.quantity;
-                            position += trade.quantity;
-                            cost_basis = total_cost / position;
-                            opening_commission += trade.commission;
-                        } else {
-                            // position == 0: Opening a new long position
-                            position = trade.quantity;
-                            cost_basis = trade.fill_price;
-                            opening_commission = trade.commission;
-                        }
-                    }
-                    Side::Sell => {
-                        if position > Decimal::ZERO {
-                            // Closing long position (selling)
-                            let qty_to_close = trade.quantity.min(position);
-                            if qty_to_close > Decimal::ZERO {
-                                // P&L = (sell price - buy price) * qty
-                                let trade_pnl = (trade.fill_price - cost_basis) * qty_to_close;
-                                let trade_commission = opening_commission * qty_to_close / position
-                                    + trade.commission * qty_to_close / trade.quantity;
-                                realized_trades.push(trade_pnl);
-                                total_commission += trade_commission;
-                                symbol_had_trades = true;
-                            }
-
-                            // Update opening commission proportionally
-                            let remaining_ratio = (position - qty_to_close) / position;
-                            opening_commission = opening_commission * remaining_ratio;
-                            position -= qty_to_close;
-
-                            let qty_remaining = trade.quantity - qty_to_close;
-                            if qty_remaining > Decimal::ZERO {
-                                // Sold more than owned -- open a new short position
-                                position = -qty_remaining;
-                                cost_basis = trade.fill_price;
-                                opening_commission = trade.commission * qty_remaining / trade.quantity;
-                            } else if position == Decimal::ZERO {
-                                cost_basis = Decimal::ZERO;
-                                opening_commission = Decimal::ZERO;
-                            }
-                        } else if position < Decimal::ZERO {
-                            // Adding to existing short position
-                            let abs_pos = position.abs();
-                            let total_cost = cost_basis * abs_pos + trade.fill_price * trade.quantity;
-                            position -= trade.quantity; // position goes more negative
-                            cost_basis = total_cost / position.abs();
-                            opening_commission += trade.commission;
-                        } else {
-                            // position == 0: Opening a new short position
-                            position = -trade.quantity;
-                            cost_basis = trade.fill_price;
-                            opening_commission = trade.commission;
-                        }
-                    }
-                }
-            }
-
-            if symbol_had_trades {
-                symbols_set.insert(symbol.clone());
-            }
-
-            // Warn about unclosed positions at end of day
-            if position > Decimal::ZERO {
-                eprintln!("Warning: {} - {} unclosed long shares at end of day",
-                    symbol, position);
-            } else if position < Decimal::ZERO {
-                eprintln!("Warning: {} - {} unclosed short shares at end of day",
-                    symbol, position.abs());
-            }
-        }
-
-        // Classify realized trades as wins/losses based on GROSS P&L (before commission).
-        // Note: hourly performance classifies on NET P&L (after commission). This is intentional —
-        // daily win/loss reflects trade direction quality, hourly reflects actual dollar outcome.
-        let mut winning_pnls = Vec::new();
-        let mut losing_pnls = Vec::new();
-
-        for pnl in realized_trades {
-            if pnl > Decimal::ZERO {
+            // Classify on GROSS P&L (matches the prior convention in
+            // calculate_daily_summary). Hourly performance still classifies on
+            // NET — that distinction is preserved.
+            if mt.gross_pnl > Decimal::ZERO {
                 summary.winning_trades += 1;
-                winning_pnls.push(pnl);
-                if pnl > summary.largest_win {
-                    summary.largest_win = pnl;
+                winning_pnls.push(mt.net_pnl);
+                if mt.net_pnl > summary.largest_win {
+                    summary.largest_win = mt.net_pnl;
                 }
-            } else if pnl < Decimal::ZERO {
+            } else if mt.gross_pnl < Decimal::ZERO {
                 summary.losing_trades += 1;
-                losing_pnls.push(pnl);
-                if pnl < summary.largest_loss {
-                    summary.largest_loss = pnl;
+                losing_pnls.push(mt.net_pnl);
+                if mt.net_pnl < summary.largest_loss {
+                    summary.largest_loss = mt.net_pnl;
                 }
             }
-            summary.realized_pnl += pnl;
+            summary.realized_pnl += mt.net_pnl;
         }
 
-        // Subtract matched commission from realized P&L (commission already filtered to matched trades only)
-        summary.realized_pnl -= total_commission;
-        summary.total_commission = total_commission;
-        summary.total_volume = total_volume;
-
-        summary.total_trades = (summary.winning_trades + summary.losing_trades) as u32;
+        summary.gross_pnl = summary.realized_pnl + summary.total_commission;
+        summary.total_trades = summary.winning_trades + summary.losing_trades;
         summary.symbols_traded = symbols_set.into_iter().collect();
 
         if !winning_pnls.is_empty() {
             let sum: Decimal = winning_pnls.iter().sum();
-            summary.avg_win = sum / Decimal::from(winning_pnls.len());
+            summary.avg_win = sum / Decimal::from(winning_pnls.len() as u32);
         }
-
         if !losing_pnls.is_empty() {
             let sum: Decimal = losing_pnls.iter().sum();
-            summary.avg_loss = sum / Decimal::from(losing_pnls.len());
+            summary.avg_loss = sum / Decimal::from(losing_pnls.len() as u32);
         }
-
         summary.win_rate = if summary.total_trades > 0 {
             (summary.winning_trades as f64) / (summary.total_trades as f64) * 100.0
         } else {
             0.0
         };
 
-        summary.gross_pnl = summary.realized_pnl + summary.total_commission;
-
-        summary.time_slot_performance = Self::calculate_hourly_performance(&all_trades);
+        // Hourly performance from raw fills — unchanged. Hourly still runs its
+        // own per-day FIFO; overnight trades are not represented in the hour
+        // bars (acceptable v1 limitation; documented in plan/risks).
+        summary.time_slot_performance = Self::calculate_hourly_performance(raw);
 
         summary
     }

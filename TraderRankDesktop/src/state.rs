@@ -1,7 +1,36 @@
 use crate::models::*;
-use chrono::NaiveDate;
+use chrono::{NaiveDate, Datelike};
 use rust_decimal::Decimal;
 use std::collections::HashMap;
+
+/// Trade outcome classification using R-based threshold.
+/// Winner: pnl >= 0.5R, Lossless: -$1 <= pnl < 0.5R, Loser: pnl < -$1
+/// "pnl" is net (after commissions) or gross depending on `StatsConfig`.
+/// Sub-dollar losses are treated as Lossless — they're noise (commission residue,
+/// rounding) rather than meaningful losing trades.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TradeOutcome {
+    Winner,
+    Lossless,
+    Loser,
+}
+
+/// User-toggleable display config that affects how stats are computed.
+/// Provided as `Signal<StatsConfig>` via Dioxus context so any view can read it
+/// and react instantly when the toggle changes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StatsConfig {
+    /// When true, all P&L values used for stats are NET of commissions
+    /// (default — matches how brokers report). When false, GROSS — useful
+    /// for evaluating raw strategy edge separate from execution costs.
+    pub count_commissions: bool,
+}
+
+impl Default for StatsConfig {
+    fn default() -> Self {
+        Self { count_commissions: true }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct WeeklyRConfig {
@@ -63,6 +92,14 @@ pub struct AppState {
 
     // R-unit config
     pub r_configs: Vec<WeeklyRConfig>,
+    /// Fallback R value for any week without an explicit `WeeklyRConfig` entry.
+    /// User-settable in Settings; new weeks pick this up as they roll in.
+    pub default_r_value: Decimal,
+
+    /// Maximum hold duration (days) for a round-trip to be counted as a daytrader
+    /// trade. Trades exceeding this were already filtered out of `matched_trades`
+    /// at load time; this field is kept for display/reference in Settings.
+    pub max_hold_days: u32,
 
     // Exclusions: key -> reason
     pub exclusions: HashMap<String, String>,
@@ -74,7 +111,7 @@ impl AppState {
             .iter()
             .find(|c| c.week_start == week_start)
             .map(|c| c.r_value)
-            .unwrap_or(Decimal::new(100, 0))
+            .unwrap_or(self.default_r_value)
     }
 
     pub fn pnl_in_r(&self, pnl: Decimal, r_value: Decimal) -> Decimal {
@@ -82,6 +119,39 @@ impl AppState {
             Decimal::ZERO
         } else {
             pnl / r_value
+        }
+    }
+
+    /// Get the trade's effective P&L for stats — net (after commissions) when
+    /// `count_commissions` is true, else gross. This is the single source of
+    /// truth for "what counts as the trade's P&L" across the app.
+    pub fn trade_pnl(&self, mt: &MatchedTrade, count_commissions: bool) -> Decimal {
+        if count_commissions { mt.net_pnl } else { mt.gross_pnl }
+    }
+
+    /// Get the day's effective P&L for stats — net realized (default) when
+    /// `count_commissions` is true, else gross.
+    pub fn daily_pnl(&self, d: &DailySummary, count_commissions: bool) -> Decimal {
+        if count_commissions { d.realized_pnl } else { d.gross_pnl }
+    }
+
+    /// Classify a matched trade as Winner/Lossless/Loser using R threshold.
+    /// Winner: pnl >= 0.5R, Lossless: -$1 <= pnl < 0.5R, Loser: pnl < -$1.
+    /// Sub-dollar losses are noise (commission residue, rounding) — folded into Lossless.
+    /// Honors the `count_commissions` flag for the P&L value used in classification.
+    pub fn trade_outcome_with(&self, mt: &MatchedTrade, count_commissions: bool) -> TradeOutcome {
+        let pnl = self.trade_pnl(mt, count_commissions);
+        if pnl < -Decimal::ONE {
+            return TradeOutcome::Loser;
+        }
+        let days_from_mon = mt.exit_time.date_naive().weekday().num_days_from_monday();
+        let monday = mt.exit_time.date_naive() - chrono::Duration::days(days_from_mon as i64);
+        let r_val = self.r_value_for_week(monday);
+        let threshold = r_val / Decimal::from(2); // 0.5R
+        if pnl >= threshold {
+            TradeOutcome::Winner
+        } else {
+            TradeOutcome::Lossless
         }
     }
 

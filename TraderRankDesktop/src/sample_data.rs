@@ -433,6 +433,8 @@ pub fn generate_sample_data() -> AppState {
         hourly_stats,
         daily_pnls,
         r_configs,
+        default_r_value: dec!(100),
+        max_hold_days: 2,
         exclusions: std::collections::HashMap::new(),
     }
 }

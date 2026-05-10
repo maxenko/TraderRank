@@ -279,7 +279,16 @@ pub fn trading_summary_to_app_state(summary: TradingSummary, matched_trades: &[M
         .map(|d| (d.date.format("%m/%d").to_string(), d.realized_pnl))
         .collect();
 
-    // Weekly R configs (default R=$100)
+    // Weekly R configs — new weeks pick up the user's persisted default R value.
+    let persisted = settings_store::load_raw();
+    let default_r_value: Decimal = persisted
+        .as_ref()
+        .and_then(|s| s.default_r_value.parse::<Decimal>().ok())
+        .unwrap_or_else(|| dec!(100));
+    let max_hold_days: u32 = persisted
+        .as_ref()
+        .map(|s| s.max_hold_days)
+        .unwrap_or(2);
     let r_configs: Vec<WeeklyRConfig> = weekly_summaries
         .iter()
         .map(|w| {
@@ -288,14 +297,12 @@ pub fn trading_summary_to_app_state(summary: TradingSummary, matched_trades: &[M
             let monday = date - chrono::Duration::days(days_from_mon as i64);
             WeeklyRConfig {
                 week_start: monday,
-                r_value: dec!(100),
+                r_value: default_r_value,
             }
         })
         .collect();
 
-    let exclusions = settings_store::load_raw()
-        .map(|s| s.exclusions)
-        .unwrap_or_default();
+    let exclusions = persisted.map(|s| s.exclusions).unwrap_or_default();
 
     AppState {
         daily_summaries,
@@ -324,6 +331,8 @@ pub fn trading_summary_to_app_state(summary: TradingSummary, matched_trades: &[M
         hourly_stats,
         daily_pnls,
         r_configs,
+        default_r_value,
+        max_hold_days,
         exclusions,
     }
 }
@@ -333,9 +342,26 @@ pub fn load_app_state() -> AppState {
     let trades = load_trades_from_imports();
     if !trades.is_empty() {
         eprintln!("Processing {} trades through analytics engine...", trades.len());
-        let summary = crate::analytics::TradingAnalytics::analyze_trades(&trades);
-        let matched = crate::trade_matcher::match_trades(&trades);
-        eprintln!("Matched {} round-trip trades", matched.len());
+        let matched_all = crate::trade_matcher::match_trades(&trades);
+
+        // Drop multi-day round trips: these are usually pre-existing positions
+        // (e.g. long-term holdings) being closed inside the dataset, which the
+        // matcher otherwise pairs against unrelated later opens. The threshold
+        // is configurable in Settings; default 2 days.
+        let max_hold_days: u32 = settings_store::load_raw()
+            .map(|s| s.max_hold_days)
+            .unwrap_or(2);
+        let cutoff_days = max_hold_days as i64;
+        let matched: Vec<_> = matched_all
+            .into_iter()
+            .filter(|mt| {
+                let hold = (mt.exit_time.date_naive() - mt.entry_time.date_naive()).num_days();
+                hold <= cutoff_days
+            })
+            .collect();
+
+        let summary = crate::analytics::TradingAnalytics::analyze_trades_with_matched(&trades, &matched);
+        eprintln!("Matched {} round-trip trades (kept after max_hold_days={} filter)", matched.len(), max_hold_days);
         let mut state = trading_summary_to_app_state(summary, &matched);
         state.trades = trades;
         state.matched_trades = matched;

@@ -59,6 +59,42 @@ pub struct PersistedSettings {
     #[serde(default)]
     pub flex_query_id: String,
 
+    // Trades view
+    #[serde(default)]
+    pub trades_hide_excluded: bool,
+
+    // Week view: ISO date "YYYY-MM-DD" of the week's Monday, "" = current week
+    #[serde(default)]
+    pub selected_week: String,
+
+    // Dashboard Trends section
+    #[serde(default)]
+    pub trends_tab: String,
+
+    // Dashboard Best/Worst by Weekday range
+    #[serde(default = "default_bestworst_range")]
+    pub bestworst_range: String,
+
+    // Dashboard Best/Worst by Weekday display mode: "BestWorst" or "Average"
+    #[serde(default)]
+    pub bestworst_mode: String,
+
+    // Whether to subtract commissions from P&L in stats (true = net, false = gross)
+    #[serde(default = "default_count_commissions")]
+    pub count_commissions: bool,
+
+    // Fallback $/R for any week without an explicit r_config entry. New weeks
+    // roll in using this value. Stored as a string for Decimal round-tripping.
+    #[serde(default = "default_default_r_value")]
+    pub default_r_value: String,
+
+    // Maximum hold duration (days) for a round-trip to be counted as a daytrader
+    // trade. Trades exceeding this are dropped from stats — they're typically
+    // long-term swing positions or matches against pre-existing positions that
+    // weren't captured in the dataset. Default 2 days.
+    #[serde(default = "default_max_hold_days")]
+    pub max_hold_days: u32,
+
     // Exclusions: key -> reason (optional)
     // Keys: "day:YYYY-MM-DD" for day exclusions, "trade:SYMBOL:EXIT_TIME_RFC3339" for trade exclusions
     #[serde(default)]
@@ -71,6 +107,10 @@ fn default_max_entries() -> usize { 100 }
 fn default_sort_col_period() -> String { "period".to_string() }
 fn default_sort_col_time() -> String { "time".to_string() }
 fn default_analytics_range() -> String { "All".to_string() }
+fn default_bestworst_range() -> String { "1M".to_string() }
+fn default_count_commissions() -> bool { true }
+fn default_default_r_value() -> String { "100".to_string() }
+fn default_max_hold_days() -> u32 { 2 }
 fn default_zoom() -> f64 { 1.0 }
 fn default_one() -> f64 { 1.0 }
 
